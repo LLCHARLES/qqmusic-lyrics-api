@@ -75,7 +75,7 @@ export default async function handler(req, res) {
       albumName: extractAlbumName(song),
       duration: calculateDuration(song.interval),
       instrumental: !lyrics.syncedLyrics || lyrics.syncedLyrics.trim() === '',
-      plainLyrics: lyrics.plainLyrics,
+      plainLyrics: '', // 设置为空字符串，不移除该字段
       syncedLyrics: lyrics.syncedLyrics,
       translatedLyrics: lyrics.translatedLyrics
     };
@@ -139,9 +139,9 @@ async function searchSong(trackName, artists, originalTrackName, originalArtistN
     return await simplifiedSearch(trackName, artists, originalTrackName, originalArtistName);
   }
   
-  // 正常搜索
+  // 正常搜索 - 限制返回3个结果
   for (const artist of artists) {
-    const searchUrl = `https://api.vkeys.cn/v2/music/tencent/search/song?word=${encodeURIComponent(trackName + ' ' + artist)}`;
+    const searchUrl = `https://api.vkeys.cn/v2/music/tencent/search/song?word=${encodeURIComponent(trackName + ' ' + artist)}&num=3`;
     console.log('搜索URL:', searchUrl);
     
     try {
@@ -180,7 +180,8 @@ async function simplifiedSearch(trackName, artists, originalTrackName, originalA
       const keywords = strategies[i]();
       
       for (const keyword of keywords) {
-        const searchUrl = `https://api.vkeys.cn/v2/music/tencent/search/song?word=${encodeURIComponent(keyword)}`;
+        // 限制返回3个结果
+        const searchUrl = `https://api.vkeys.cn/v2/music/tencent/search/song?word=${encodeURIComponent(keyword)}&num=3`;
         console.log(`策略${i+1} 搜索:`, searchUrl);
         
         const response = await axios.get(searchUrl);
@@ -454,7 +455,7 @@ async function getLyrics(songId) {
       // 获取原始 LRC 歌词，并移除非歌词内容但保留[ti]和[ar]标签
       if (data.data.lrc) {
         syncedLyrics = removeNonLyricContent(data.data.lrc);
-        plainLyrics = extractPlainLyrics(syncedLyrics);
+        plainLyrics = ''; // 设置为空字符串
       }
       
       // 获取原始翻译歌词，并移除非歌词内容但保留[ti]和[ar]标签
@@ -493,7 +494,7 @@ function removeNonLyricContent(lyricContent) {
       // 移除只包含"//"的行
       if (trimmedLine === '//') return false;
       
-      // 移除包含时间轴后面只有"//"的行（如 [00:00.00]//）
+      // 移除只包含时间轴后面只有"//"的行（如 [00:00.00]//）
       if (/^\[\d+:\d+(\.\d+)?\]\s*\/\/\s*$/.test(trimmedLine)) {
         return false;
       }
@@ -526,21 +527,5 @@ function removeNonLyricContent(lyricContent) {
       // 保留时间轴和歌词行（如 [00:00.00] 歌词内容）
       return true;
     })
-    .join('\n');
-}
-
-// 从LRC歌词中提取纯文本
-function extractPlainLyrics(lyricContent) {
-  if (!lyricContent) return '';
-  
-  return lyricContent
-    .split('\n')
-    .map(line => line
-      .replace(/\[\d+:\d+\.\d+\]/g, '')
-      .replace(/\[\d+:\d+\]/g, '')
-      .replace(/\[.*?\]/g, '')
-      .trim()
-    )
-    .filter(line => line)
     .join('\n');
 }
