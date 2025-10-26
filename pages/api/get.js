@@ -74,7 +74,9 @@ export default async function handler(req, res) {
       artistName: extractArtists(song),
       albumName: extractAlbumName(song),
       duration: calculateDuration(song.interval),
-      instrumental: !lyrics.syncedLyrics || lyrics.syncedLyrics.trim() === '',
+      // 修复 instrumental 判断逻辑
+      instrumental: (!lyrics.syncedLyrics || lyrics.syncedLyrics.trim() === '') && 
+                    (!lyrics.translatedLyrics || lyrics.translatedLyrics.trim() === ''),
       plainLyrics: '', // 设置为空字符串，不移除该字段
       syncedLyrics: lyrics.syncedLyrics,
       translatedLyrics: lyrics.translatedLyrics
