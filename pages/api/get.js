@@ -504,6 +504,11 @@ function removeNonLyricContent(lyricContent) {
         return false;
       }
       
+      // 移除文曲大模型翻译声明行（如 [00:00.00]以下歌词翻译由文曲大模型提供）
+      if (/^\[\d+:\d+(\.\d+)?\]\s*以下歌词翻译由文曲大模型提供\s*$/.test(trimmedLine)) {
+        return false;
+      }
+      
       // 保留[ti]和[ar]标签
       if (/^\[(ti|ar):.*\]$/.test(trimmedLine)) {
         return true;
