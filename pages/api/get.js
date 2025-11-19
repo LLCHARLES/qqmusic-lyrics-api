@@ -621,6 +621,29 @@ function filterLyricsWithNewRules(lyricContent) {
   // 4.75) D) 全局删除：版权/授权/禁止类提示语
   filtered = filtered.filter(line => !isLicenseWarningLine(line.plainText));
   
+  // 5) 额外的清理步骤：移除空时间轴行和只有"//"的行
+  filtered = filtered.filter(line => {
+    const text = line.plainText;
+    
+    // 移除空行
+    if (text === '') return false;
+    
+    // 移除只包含"//"的行
+    if (text === '//') return false;
+    
+    // 移除只包含时间轴后面只有"//"的行（如 [00:36.66]//）
+    if (/^\/\/\s*$/.test(text) || /^\[\d+:\d+(\.\d+)?\]\s*\/\/\s*$/.test(line.raw)) {
+      return false;
+    }
+    
+    // 移除只有时间轴的空行（如 [00:23.53]）
+    if (/^\[\d+:\d+(\.\d+)?\]\s*$/.test(line.raw)) {
+      return false;
+    }
+    
+    return true;
+  });
+  
   // 重新组合成LRC格式
   const result = filtered.map(line => line.raw).join('\n');
   
