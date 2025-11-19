@@ -721,12 +721,20 @@ function containsParenPair(text) {
 // 辅助函数 - 检查是否是版权警告行
 function isLicenseWarningLine(text) {
   if (!text) return false;
-  const tokens = ['未经', '文曲大模型', '著作权', '许可', '授权', '不得', '请勿', '使用', '版权', '翻唱'];
+  
+  // 特殊关键词 - 只要包含这些词就直接认为是版权行
+  const specialKeywords = ['文曲大模型', '享有本翻译作品的著作权'];
+  for (const keyword of specialKeywords) {
+    if (text.includes(keyword)) return true;
+  }
+  
+  // 普通关键词 - 需要命中多个才认为是版权行
+  const tokens = ['未经', '许可', '授权', '不得', '请勿', '使用', '版权', '翻唱'];
   let count = 0;
   for (const token of tokens) {
     if (text.includes(token)) count += 1;
   }
-  return count >= 4;
+  return count >= 3; // 降低阈值到3
 }
 
 // 辅助函数 - 从被删除的冒号行中提取制作人员信息
