@@ -144,7 +144,6 @@ async function searchSong(trackName, artists, originalTrackName, originalArtistN
   // 正常搜索 - 限制返回3个结果
   for (const artist of artists) {
     const searchUrl = `https://api.vkeys.cn/v2/music/tencent/search/song?word=${encodeURIComponent(trackName + ' ' + artist)}&num=3`;
-    console.log('搜索URL:', searchUrl);
     
     try {
       const response = await axios.get(searchUrl);
@@ -184,7 +183,6 @@ async function simplifiedSearch(trackName, artists, originalTrackName, originalA
       for (const keyword of keywords) {
         // 限制返回3个结果
         const searchUrl = `https://api.vkeys.cn/v2/music/tencent/search/song?word=${encodeURIComponent(keyword)}&num=3`;
-        console.log(`策略${i+1} 搜索:`, searchUrl);
         
         const response = await axios.get(searchUrl);
         const data = response.data;
@@ -192,7 +190,6 @@ async function simplifiedSearch(trackName, artists, originalTrackName, originalA
         if (data?.code === 200 && data.data?.length > 0) {
           const match = findBestMatch(data.data, trackName, artists, originalTrackName, originalArtistName);
           if (match) {
-            console.log(`策略${i+1} 成功`);
             return match;
           }
         }
@@ -234,9 +231,6 @@ function findBestMatch(results, targetTrack, artists, originalTrackName, origina
   
   for (const song of results) {
     const score = calculateSmartScore(song, targetTrack, artists, originalTrackName, originalArtistName);
-    const songName = getSongName(song);
-    
-    console.log(`检查: "${songName}" - "${extractArtists(song)}" - 分数: ${score}`);
     
     if (score > bestScore) {
       bestScore = score;
@@ -262,7 +256,6 @@ function findExactMatch(results, originalTrackName, originalArtistName) {
       
       // 要求歌曲名和艺术家都完全匹配
       if (songNameLower === trackLower && songArtistsLower === artistLower) {
-        console.log(`完全精确匹配: "${songName}" - "${songArtists}"`);
         return song;
       }
     }
@@ -463,9 +456,6 @@ async function getLyrics(songId) {
       // 使用新的过滤规则处理翻译歌词
       if (data.data.trans) {
         translatedLyrics = filterLyricsWithNewRules(data.data.trans);
-        console.log('成功获取翻译歌词');
-      } else {
-        console.log('未找到翻译歌词');
       }
     }
     
@@ -488,11 +478,16 @@ function filterLyricsWithNewRules(lyricContent) {
   // 1) 将歌词按行分割
   const lines = lyricContent.split('\n');
   
-  console.log('原始歌词行数:', lines.length);
+  // 首先移除所有的标签行（[ti:], [ar:], [al:], [by:], [offset:] 等）
+  const filteredLines = lines.filter(line => {
+    const trimmed = line.trim();
+    // 移除所有标签行，但保留有时间轴的歌词行
+    return !(/^\[(ti|ar|al|by|offset|t_time|kana|lang|total):.*\]$/i.test(trimmed));
+  });
   
   // 解析每行，提取时间戳和文本内容
   const parsedLines = [];
-  for (const line of lines) {
+  for (const line of filteredLines) {
     const match = line.match(/^(\[[0-9:.]+\])(.*)$/);
     if (match) {
       parsedLines.push({
@@ -501,13 +496,8 @@ function filterLyricsWithNewRules(lyricContent) {
         text: match[2].trim(),
         plainText: match[2].trim().replace(/\[.*?\]/g, '') // 移除内嵌标签的纯文本
       });
-    } else {
-      // 对于非时间轴行（如标签行），直接跳过
-      continue;
     }
   }
-  
-  console.log('解析后的有效行数:', parsedLines.length);
   
   // 2) 基础序列 - 按时间戳排序
   let filtered = [...parsedLines];
@@ -515,20 +505,12 @@ function filterLyricsWithNewRules(lyricContent) {
   // 收集"被删除的冒号行"的纯文本
   let removedColonPlainTexts = [];
   
-  // 调试：打印前三行内容
-  console.log('前三行内容:');
-  for (let i = 0; i < Math.min(3, filtered.length); i++) {
-    console.log(`[${i}]`, filtered[i].plainText);
-  }
-  
   // 2) A) 标题行（仅前三行内；含 '-' 就删）
   let i = 0;
   let scanLimit = Math.min(3, filtered.length);
   while (i < scanLimit) {
     const text = filtered[i].plainText;
-    console.log(`检查行 ${i}: "${text}" - 包含连字符: ${text.includes('-')}`);
     if (text.includes('-')) {
-      console.log(`删除行 ${i}: "${text}" (包含连字符)`);
       filtered.splice(i, 1);
       scanLimit = Math.min(3, filtered.length);
       continue;
@@ -543,9 +525,7 @@ function filterLyricsWithNewRules(lyricContent) {
   scanLimit = Math.min(3, filtered.length);
   while (i < scanLimit) {
     const text = filtered[i].plainText;
-    console.log(`检查行 ${i}: "${text}" - 包含冒号: ${containsColon(text)}`);
     if (containsColon(text)) {
-      console.log(`删除行 ${i}: "${text}" (包含冒号)`);
       removedColonPlainTexts.push(text);
       filtered.splice(i, 1);
       removedA2Colon = true;
@@ -569,7 +549,6 @@ function filterLyricsWithNewRules(lyricContent) {
   
   if (removedA2Colon) {
     if (leading >= 1) {
-      console.log(`删除开头 ${leading} 行连续冒号行`);
       for (let idx = 0; idx < leading; idx++) {
         removedColonPlainTexts.push(filtered[idx].plainText);
       }
@@ -577,7 +556,6 @@ function filterLyricsWithNewRules(lyricContent) {
     }
   } else {
     if (leading >= 2) {
-      console.log(`删除开头 ${leading} 行连续冒号行`);
       for (let idx = 0; idx < leading; idx++) {
         removedColonPlainTexts.push(filtered[idx].plainText);
       }
@@ -603,7 +581,6 @@ function filterLyricsWithNewRules(lyricContent) {
       }
       const runLen = j - i;
       if (runLen >= 2) {
-        console.log(`删除连续冒号段 ${i}-${j-1}, 长度: ${runLen}`);
         // 收集整段 i..<(i+runLen) 的纯文本后丢弃
         for (let k = i; k < j; k++) {
           removedColonPlainTexts.push(filtered[k].plainText);
@@ -622,13 +599,7 @@ function filterLyricsWithNewRules(lyricContent) {
   filtered = newFiltered;
   
   // 4) C) 全局删除：凡包含【】或 [] 的行一律删除
-  filtered = filtered.filter(line => {
-    const hasBracket = containsBracketTag(line.plainText);
-    if (hasBracket) {
-      console.log(`删除括号行: "${line.plainText}"`);
-    }
-    return !hasBracket;
-  });
+  filtered = filtered.filter(line => !containsBracketTag(line.plainText));
   
   // 4.5) C2) 处理开头两行的"圆括号标签"
   i = 0;
@@ -636,7 +607,6 @@ function filterLyricsWithNewRules(lyricContent) {
   while (i < scanLimit) {
     const text = filtered[i].plainText;
     if (containsParenPair(text)) {
-      console.log(`删除圆括号行: "${text}"`);
       filtered.splice(i, 1);
       scanLimit = Math.min(2, filtered.length);
       continue;
@@ -646,39 +616,25 @@ function filterLyricsWithNewRules(lyricContent) {
   }
   
   // 4.75) D) 全局删除：版权/授权/禁止类提示语
-  filtered = filtered.filter(line => {
-    const isLicense = isLicenseWarningLine(line.plainText);
-    if (isLicense) {
-      console.log(`删除版权行: "${line.plainText}"`);
-    }
-    return !isLicense;
-  });
+  filtered = filtered.filter(line => !isLicenseWarningLine(line.plainText));
   
   // 5) 额外的清理步骤：移除空时间轴行和只有"//"的行
   filtered = filtered.filter(line => {
     const text = line.plainText;
     
     // 移除空行
-    if (text === '') {
-      console.log(`删除空行: "${line.raw}"`);
-      return false;
-    }
+    if (text === '') return false;
     
     // 移除只包含"//"的行
-    if (text === '//') {
-      console.log(`删除//行: "${line.raw}"`);
-      return false;
-    }
+    if (text === '//') return false;
     
     // 移除只包含时间轴后面只有"//"的行（如 [00:36.66]//）
     if (/^\/\/\s*$/.test(text) || /^\[\d+:\d+(\.\d+)?\]\s*\/\/\s*$/.test(line.raw)) {
-      console.log(`删除时间轴+//行: "${line.raw}"`);
       return false;
     }
     
     // 移除只有时间轴的空行（如 [00:23.53]）
     if (/^\[\d+:\d+(\.\d+)?\]\s*$/.test(line.raw)) {
-      console.log(`删除空时间轴行: "${line.raw}"`);
       return false;
     }
     
@@ -687,14 +643,6 @@ function filterLyricsWithNewRules(lyricContent) {
   
   // 重新组合成LRC格式
   const result = filtered.map(line => line.raw).join('\n');
-  
-  console.log('最终过滤后行数:', filtered.length);
-  
-  // 提取制作人员信息（可选，用于日志）
-  const credits = extractNamesFromRemovedColonLines(removedColonPlainTexts);
-  if (credits.length > 0) {
-    console.log('过滤掉的制作人员信息:', credits.join('/'));
-  }
   
   return result;
 }
