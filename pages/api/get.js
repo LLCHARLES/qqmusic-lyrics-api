@@ -475,8 +475,8 @@ async function getLyrics(songId) {
 function filterLyricsWithNewRules(lyricContent) {
   if (!lyricContent) return '';
   
-  // 1) 将歌词按行分割
-  const lines = lyricContent.split('\n');
+  // 1) 将歌词按行分割，处理 Windows 换行符 \r\n
+  const lines = lyricContent.replace(/\r\n/g, '\n').split('\n');
   
   // 首先移除所有的标签行（[ti:], [ar:], [al:], [by:], [offset:] 等）
   const filteredLines = lines.filter(line => {
