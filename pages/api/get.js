@@ -442,7 +442,7 @@ function calculateDuration(interval) {
   return 0;
 }
 
-// 获取歌词（只保留 LRC 和翻译歌词，移除非歌词内容但保留[ti]和[ar]标签）
+// 获取歌词（使用新的过滤规则）
 async function getLyrics(songId) {
   try {
     const lyricUrl = `https://api.vkeys.cn/v2/music/tencent/lyric?id=${songId}`;
@@ -454,15 +454,15 @@ async function getLyrics(songId) {
     let translatedLyrics = '';
     
     if (data?.code === 200 && data.data) {
-      // 获取原始 LRC 歌词，并移除非歌词内容但保留[ti]和[ar]标签
+      // 使用新的过滤规则处理LRC歌词
       if (data.data.lrc) {
-        syncedLyrics = removeNonLyricContent(data.data.lrc);
+        syncedLyrics = filterLyricsWithNewRules(data.data.lrc);
         plainLyrics = ''; // 设置为空字符串
       }
       
-      // 获取原始翻译歌词，并移除非歌词内容但保留[ti]和[ar]标签
+      // 使用新的过滤规则处理翻译歌词
       if (data.data.trans) {
-        translatedLyrics = removeNonLyricContent(data.data.trans);
+        translatedLyrics = filterLyricsWithNewRules(data.data.trans);
         console.log('成功获取翻译歌词');
       } else {
         console.log('未找到翻译歌词');
@@ -481,58 +481,201 @@ async function getLyrics(songId) {
   }
 }
 
-// 移除非歌词内容但保留[ti]和[ar]标签，并移除只有时间轴的空行、"//"行和版权声明行
-function removeNonLyricContent(lyricContent) {
+// 使用新的过滤规则处理歌词
+function filterLyricsWithNewRules(lyricContent) {
   if (!lyricContent) return '';
   
-  return lyricContent
-    .split('\n')
-    .filter(line => {
-      const trimmedLine = line.trim();
-      
-      // 移除空行
-      if (trimmedLine === '') return false;
-      
-      // 移除只包含"//"的行
-      if (trimmedLine === '//') return false;
-      
-      // 移除只包含时间轴后面只有"//"的行（如 [00:00.00]//）
-      if (/^\[\d+:\d+(\.\d+)?\]\s*\/\/\s*$/.test(trimmedLine)) {
-        return false;
+  // 1) 将歌词按行分割
+  const lines = lyricContent.split('\n');
+  
+  // 解析每行，提取时间戳和文本内容
+  const parsedLines = lines.map(line => {
+    const match = line.match(/^(\[[0-9:.]+\])(.*)$/);
+    if (match) {
+      return {
+        raw: line,
+        timestamp: match[1],
+        text: match[2].trim(),
+        plainText: match[2].trim().replace(/\[.*?\]/g, '') // 移除内嵌标签的纯文本
+      };
+    }
+    return { raw: line, timestamp: '', text: line.trim(), plainText: line.trim() };
+  });
+  
+  // 2) 基础序列 - 按时间戳排序（这里我们保持原顺序，因为LRC通常已排序）
+  let filtered = [...parsedLines];
+  
+  // 收集"被删除的冒号行"的纯文本
+  let removedColonPlainTexts = [];
+  
+  // 2) A) 标题行（仅前三行内；含 '-' 就删）
+  let i = 0;
+  let scanLimit = Math.min(3, filtered.length);
+  while (i < scanLimit) {
+    const text = filtered[i].plainText;
+    if (text.includes('-')) {
+      filtered.splice(i, 1);
+      scanLimit = Math.min(3, filtered.length);
+      continue;
+    } else {
+      i += 1;
+    }
+  }
+  
+  // 2.5) A2) 前三行内：含冒号的行直接删除
+  let removedA2Colon = false;
+  i = 0;
+  scanLimit = Math.min(3, filtered.length);
+  while (i < scanLimit) {
+    const text = filtered[i].plainText;
+    if (containsColon(text)) {
+      removedColonPlainTexts.push(text);
+      filtered.splice(i, 1);
+      removedA2Colon = true;
+      scanLimit = Math.min(3, filtered.length);
+      continue;
+    } else {
+      i += 1;
+    }
+  }
+  
+  // 3) B0) 处理"开头连续冒号行"
+  let leading = 0;
+  while (leading < filtered.length) {
+    const text = filtered[leading].plainText;
+    if (containsColon(text)) {
+      leading += 1;
+    } else {
+      break;
+    }
+  }
+  
+  if (removedA2Colon) {
+    if (leading >= 1) {
+      for (let idx = 0; idx < leading; idx++) {
+        removedColonPlainTexts.push(filtered[idx].plainText);
       }
-      
-      // 移除版权声明行（如 [00:00.00]TME享有本翻译作品的著作权）
-      if (/^\[\d+:\d+(\.\d+)?\]\s*(TME|QQ音乐)享有本翻译作品的著作权\s*$/.test(trimmedLine)) {
-        return false;
+      filtered.splice(0, leading);
+    }
+  } else {
+    if (leading >= 2) {
+      for (let idx = 0; idx < leading; idx++) {
+        removedColonPlainTexts.push(filtered[idx].plainText);
       }
-      
-      // 移除文曲大模型翻译声明行（如 [00:00.00]以下歌词翻译由文曲大模型提供）
-      if (/^\[\d+:\d+(\.\d+)?\]\s*以下歌词翻译由文曲大模型提供\s*$/.test(trimmedLine)) {
-        return false;
+      filtered.splice(0, leading);
+    }
+  }
+  
+  // 3) 制作行（全局）：删除任意位置出现的"连续 ≥2 行均含冒号"的区间
+  let newFiltered = [];
+  i = 0;
+  while (i < filtered.length) {
+    const text = filtered[i].plainText;
+    if (containsColon(text)) {
+      // 统计这一段连续"含冒号"的长度
+      let j = i;
+      while (j < filtered.length) {
+        const tj = filtered[j].plainText;
+        if (containsColon(tj)) {
+          j += 1;
+        } else {
+          break;
+        }
       }
-      
-      // 保留[ti]和[ar]标签
-      if (/^\[(ti|ar):.*\]$/.test(trimmedLine)) {
-        return true;
+      const runLen = j - i;
+      if (runLen >= 2) {
+        // 收集整段 i..<(i+runLen) 的纯文本后丢弃
+        for (let k = i; k < j; k++) {
+          removedColonPlainTexts.push(filtered[k].plainText);
+        }
+        i = j;
+      } else {
+        // 仅 1 行，保留
+        newFiltered.push(filtered[i]);
+        i = j;
       }
-      
-      // 移除其他歌曲信息标签行（如 [al:...], [by:...], [offset:...] 等）
-      if (/^\[(al|by|offset|t_time|kana|lang|total):.*\]$/.test(trimmedLine)) {
-        return false;
+    } else {
+      newFiltered.push(filtered[i]);
+      i += 1;
+    }
+  }
+  filtered = newFiltered;
+  
+  // 4) C) 全局删除：凡包含【】或 [] 的行一律删除
+  filtered = filtered.filter(line => !containsBracketTag(line.plainText));
+  
+  // 4.5) C2) 处理开头两行的"圆括号标签"
+  i = 0;
+  scanLimit = Math.min(2, filtered.length);
+  while (i < scanLimit) {
+    const text = filtered[i].plainText;
+    if (containsParenPair(text)) {
+      filtered.splice(i, 1);
+      scanLimit = Math.min(2, filtered.length);
+      continue;
+    } else {
+      i += 1;
+    }
+  }
+  
+  // 4.75) D) 全局删除：版权/授权/禁止类提示语
+  filtered = filtered.filter(line => !isLicenseWarningLine(line.plainText));
+  
+  // 重新组合成LRC格式
+  const result = filtered.map(line => line.raw).join('\n');
+  
+  // 提取制作人员信息（可选，用于日志）
+  const credits = extractNamesFromRemovedColonLines(removedColonPlainTexts);
+  if (credits.length > 0) {
+    console.log('过滤掉的制作人员信息:', credits.join('/'));
+  }
+  
+  return result;
+}
+
+// 辅助函数 - 检查是否包含冒号（中英文冒号）
+function containsColon(text) {
+  return text.includes(':') || text.includes('：');
+}
+
+// 辅助函数 - 检查是否包含括号标签
+function containsBracketTag(text) {
+  const hasHalfPair = text.includes('[') && text.includes(']');
+  const hasFullPair = text.includes('【') && text.includes('】');
+  return hasHalfPair || hasFullPair;
+}
+
+// 辅助函数 - 检查是否包含圆括号对
+function containsParenPair(text) {
+  const hasHalfPair = text.includes('(') && text.includes(')');
+  const hasFullPair = text.includes('（') && text.includes('）');
+  return hasHalfPair || hasFullPair;
+}
+
+// 辅助函数 - 检查是否是版权警告行
+function isLicenseWarningLine(text) {
+  if (!text) return false;
+  const tokens = ['未经', '许可', '授权', '不得', '请勿', '使用', '版权', '翻唱'];
+  let count = 0;
+  for (const token of tokens) {
+    if (text.includes(token)) count += 1;
+  }
+  return count >= 4;
+}
+
+// 辅助函数 - 从被删除的冒号行中提取制作人员信息
+function extractNamesFromRemovedColonLines(removedLines) {
+  const creditKeywords = ['lyrics', 'lyric', 'composed', 'compose', 'producer', 'produce', 'produced', '词', '曲', '制作人'];
+  const credits = [];
+  
+  for (const line of removedLines) {
+    for (const keyword of creditKeywords) {
+      if (line.toLowerCase().includes(keyword.toLowerCase())) {
+        credits.push(line);
+        break;
       }
-      
-      // 检查是否是只有时间轴的空行（如 [00:48.44]）
-      if (/^\[\d+:\d+(\.\d+)?\]$/.test(trimmedLine)) {
-        return false;
-      }
-      
-      // 检查是否是只有时间轴和空内容的行（如 [00:48.44]  后面可能有空格）
-      if (/^\[\d+:\d+(\.\d+)?\]\s*$/.test(trimmedLine)) {
-        return false;
-      }
-      
-      // 保留时间轴和歌词行（如 [00:00.00] 歌词内容）
-      return true;
-    })
-    .join('\n');
+    }
+  }
+  
+  return credits;
 }
