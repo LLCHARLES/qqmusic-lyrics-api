@@ -64,12 +64,11 @@ export default async function handler(req, res) {
     console.log('找到歌曲:', { name: getSongName(song), artist: extractArtists(song), id: song.id });
     
     // 获取歌词
-    const lyrics = await getLyrics(song.mid || song.id);
+    const lyrics = await getLyrics(song.id);
     
     // 返回结果
     const response = {
       id: song.id,
-      mid: song.mid,
       name: getSongName(song) || finalTrackName,
       trackName: getSongName(song) || finalTrackName,
       artistName: extractArtists(song),
@@ -131,8 +130,9 @@ function preprocessTrackName(trackName) {
   return processed || trackName.split(/[-\s–—]/)[0].trim();
 }
 
-// 使用官方API搜索歌曲
+// 搜索歌曲
 async function searchSong(trackName, artists, originalTrackName, originalArtistName) {
+  // 判断是否需要简化搜索
   const shouldSimplify = trackName.length > 30 || 
     / - | – | — |\(|\)|《|》|动画|剧集|主题曲|anniversary|theme song|version|remastered|mix|edit|致.*先生|———/i.test(trackName);
   
@@ -141,59 +141,27 @@ async function searchSong(trackName, artists, originalTrackName, originalArtistN
     return await simplifiedSearch(trackName, artists, originalTrackName, originalArtistName);
   }
   
-  // 使用官方API搜索 - 限制返回3个结果
+  // 正常搜索 - 限制返回3个结果
   for (const artist of artists) {
+    const searchUrl = `https://api.vkeys.cn/v2/music/tencent/search/song?word=${encodeURIComponent(trackName + ' ' + artist)}&num=3`;
+    
     try {
-      const searchData = {
-        req_1: {
-          method: "DoSearchForQQMusicDesktop",
-          module: "music.search.SearchCgiService",
-          param: {
-            num_per_page: 3,
-            page_num: 1,
-            query: trackName + ' ' + artist,
-            search_type: 0
-          }
-        }
-      };
-      
-      const response = await axios.post('https://u.y.qq.com/cgi-bin/musicu.fcg', searchData, {
-        headers: {
-          'Referer': 'https://c.y.qq.com/',
-          'Content-Type': 'application/json'
-        }
-      });
-      
+      const response = await axios.get(searchUrl);
       const data = response.data;
       
-      if (data?.req_1?.data?.body?.song?.list?.length > 0) {
-        const songs = transformSearchResults(data.req_1.data.body.song.list);
-        const match = findBestMatch(songs, trackName, artists, originalTrackName, originalArtistName);
+      if (data?.code === 200 && data.data?.length > 0) {
+        const match = findBestMatch(data.data, trackName, artists, originalTrackName, originalArtistName);
         if (match) return match;
       }
     } catch (error) {
-      console.error('官方API搜索失败:', error);
+      console.error('搜索失败:', error);
     }
   }
   
   return null;
 }
 
-// 转换官方API搜索结果格式
-function transformSearchResults(songList) {
-  return songList.map(song => ({
-    id: song.id,
-    mid: song.mid,
-    name: song.name,
-    title: song.name,
-    singer: song.singer,
-    album: song.album,
-    interval: song.interval,
-    songname: song.name
-  }));
-}
-
-// 简化搜索 - 使用官方API
+// 简化搜索
 async function simplifiedSearch(trackName, artists, originalTrackName, originalArtistName) {
   const strategies = [
     // 策略1: 核心歌名 + 艺术家
@@ -213,31 +181,14 @@ async function simplifiedSearch(trackName, artists, originalTrackName, originalA
       const keywords = strategies[i]();
       
       for (const keyword of keywords) {
-        const searchData = {
-          req_1: {
-            method: "DoSearchForQQMusicDesktop",
-            module: "music.search.SearchCgiService",
-            param: {
-              num_per_page: "3",
-              page_num: "1",
-              query: keyword,
-              search_type: 0
-            }
-          }
-        };
+        // 限制返回3个结果
+        const searchUrl = `https://api.vkeys.cn/v2/music/tencent/search/song?word=${encodeURIComponent(keyword)}&num=3`;
         
-        const response = await axios.post('https://u.y.qq.com/cgi-bin/musicu.fcg', searchData, {
-          headers: {
-            'Referer': 'https://c.y.qq.com/',
-            'Content-Type': 'application/json'
-          }
-        });
-        
+        const response = await axios.get(searchUrl);
         const data = response.data;
         
-        if (data?.req_1?.data?.body?.song?.list?.length > 0) {
-          const songs = transformSearchResults(data.req_1.data.body.song.list);
-          const match = findBestMatch(songs, trackName, artists, originalTrackName, originalArtistName);
+        if (data?.code === 200 && data.data?.length > 0) {
+          const match = findBestMatch(data.data, trackName, artists, originalTrackName, originalArtistName);
           if (match) {
             return match;
           }
@@ -484,58 +435,28 @@ function calculateDuration(interval) {
   return 0;
 }
 
-// 使用官方API获取歌词
-async function getLyrics(songMid) {
+// 获取歌词（使用新的过滤规则）
+async function getLyrics(songId) {
   try {
-    const currentMillis = Date.now();
-    const callback = 'MusicJsonCallback_lrc';
-    
-    const params = new URLSearchParams({
-      callback: callback,
-      pcachetime: currentMillis.toString(),
-      songmid: songMid,
-      g_tk: '5381',
-      jsonpCallback: callback,
-      loginUin: '0',
-      hostUin: '0',
-      format: 'jsonp',
-      inCharset: 'utf8',
-      outCharset: 'utf8',
-      notice: '0',
-      platform: 'yqq',
-      needNewCode: '0'
-    });
-    
-    const response = await axios.get(`https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg?${params}`, {
-      headers: {
-        'Referer': 'https://c.y.qq.com/'
-      }
-    });
-    
-    let data = response.data;
-    
-    // 处理JSONP响应
-    if (data.startsWith(callback)) {
-      data = data.replace(callback + '(', '').slice(0, -1);
-    }
-    
-    const lyricData = JSON.parse(data);
+    const lyricUrl = `https://api.vkeys.cn/v2/music/tencent/lyric?id=${songId}`;
+    const response = await axios.get(lyricUrl);
+    const data = response.data;
     
     let syncedLyrics = '';
     let plainLyrics = '';
     let translatedLyrics = '';
     
-    if (lyricData.lyric) {
-      // 解码Base64歌词
-      const decodedLyric = Buffer.from(lyricData.lyric, 'base64').toString('utf-8');
-      syncedLyrics = filterLyricsWithNewRules(decodedLyric);
-      plainLyrics = '';
-    }
-    
-    if (lyricData.trans) {
-      // 解码Base64翻译歌词
-      const decodedTrans = Buffer.from(lyricData.trans, 'base64').toString('utf-8');
-      translatedLyrics = filterLyricsWithNewRules(decodedTrans);
+    if (data?.code === 200 && data.data) {
+      // 使用新的过滤规则处理LRC歌词
+      if (data.data.lrc) {
+        syncedLyrics = filterLyricsWithNewRules(data.data.lrc);
+        plainLyrics = ''; // 设置为空字符串
+      }
+      
+      // 使用新的过滤规则处理翻译歌词
+      if (data.data.trans) {
+        translatedLyrics = filterLyricsWithNewRules(data.data.trans);
+      }
     }
     
     return { syncedLyrics, plainLyrics, translatedLyrics };
@@ -762,4 +683,21 @@ function isLicenseWarningLine(text) {
     if (text.includes(token)) count += 1;
   }
   return count >= 3; // 降低阈值到3
+}
+
+// 辅助函数 - 从被删除的冒号行中提取制作人员信息
+function extractNamesFromRemovedColonLines(removedLines) {
+  const creditKeywords = ['lyrics', 'lyric', 'composed', 'compose', 'producer', 'produce', 'produced', '词', '曲', '制作人'];
+  const credits = [];
+  
+  for (const line of removedLines) {
+    for (const keyword of creditKeywords) {
+      if (line.toLowerCase().includes(keyword.toLowerCase())) {
+        credits.push(line);
+        break;
+      }
+    }
+  }
+  
+  return credits;
 }
