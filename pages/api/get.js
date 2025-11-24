@@ -149,8 +149,8 @@ async function searchSong(trackName, artists, originalTrackName, originalArtistN
           method: "DoSearchForQQMusicDesktop",
           module: "music.search.SearchCgiService",
           param: {
-            num_per_page: "3",
-            page_num: "1",
+            num_per_page: 3,
+            page_num: 1,
             query: trackName + ' ' + artist,
             search_type: 0
           }
