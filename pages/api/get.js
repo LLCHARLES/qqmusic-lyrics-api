@@ -20,7 +20,7 @@ const songMapping = {
   'July_吳亦凡': '001fszA13qSD04',
 
   // 可以继续添加更多映射...
-  'July_吳亦凡': '001fszA13qSD04',
+  'La La La_Naughty Boy': '0000TrG33CVLrW',
 };
 
 export default async function handler(req, res) {
