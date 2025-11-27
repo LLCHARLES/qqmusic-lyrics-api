@@ -12,16 +12,15 @@ const songMapping = {
   
   // 李志
   '天空之城_李志': '002QU4XI2cKwua',
-  '關於鄭州的記憶_李志': '0022c9JL2nz3xr',
+  '關於鄭州的記憶_李志': '002KPXam27DeEJ',
   
   // 吴亦凡
   '大碗宽面_吳亦凡': '001JceuO3lQbyN',
   'November Rain_吳亦凡': '000RQ1Hy29awJd',
   'July_吳亦凡': '001fszA13qSD04',
 
-  // 中英文歌名映射也改为直接MID映射
-
   // 可以继续添加更多映射...
+  'July_吳亦凡': '001fszA13qSD04',
 };
 
 export default async function handler(req, res) {
@@ -526,7 +525,7 @@ function isCloseMatch(songTitle, targetTitle) {
 // 提取核心部分（日文/中文）
 function extractCorePart(text) {
   const japaneseOrChineseMatch = text.match(/[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]+/);
-  return japaneseOrChineseMatch ? japaneseOrChineseMatch[0] : text.split(/\s+/)[0];
+  return japaneseOrChineseMatch ? japaneseOrChineseMatch[0] : text.split(/\s+/)[0] || text;
 }
 
 // 获取歌曲名称
@@ -594,7 +593,7 @@ async function getLyrics(songMid) {
       hostUin: '0',
       format: 'jsonp',
       inCharset: 'utf8',
-      outCharset: 'utf8',
+      outCharset: 'utf-8',
       notice: '0',
       platform: 'yqq',
       needNewCode: '0'
@@ -622,14 +621,18 @@ async function getLyrics(songMid) {
     if (lyricData.lyric) {
       // 解码Base64歌词
       const decodedLyric = Buffer.from(lyricData.lyric, 'base64').toString('utf-8');
-      syncedLyrics = filterLyricsWithNewRules(decodedLyric);
+      // 解码HTML实体
+      const decodedWithEntities = decodeHtmlEntities(decodedLyric);
+      syncedLyrics = filterLyricsWithNewRules(decodedWithEntities);
       plainLyrics = '';
     }
     
     if (lyricData.trans) {
       // 解码Base64翻译歌词
       const decodedTrans = Buffer.from(lyricData.trans, 'base64').toString('utf-8');
-      translatedLyrics = filterLyricsWithNewRules(decodedTrans);
+      // 解码HTML实体
+      const decodedTransWithEntities = decodeHtmlEntities(decodedTrans);
+      translatedLyrics = filterLyricsWithNewRules(decodedTransWithEntities);
     }
     
     return { syncedLyrics, plainLyrics, translatedLyrics };
@@ -642,6 +645,30 @@ async function getLyrics(songMid) {
       translatedLyrics: ''
     };
   }
+}
+
+// HTML实体解码函数
+function decodeHtmlEntities(text) {
+  if (!text) return '';
+  
+  const entities = {
+    '&apos;': "'",
+    '&quot;': '"',
+    '&amp;': '&',
+    '&lt;': '<',
+    '&gt;': '>',
+    '&#39;': "'",
+    '&#34;': '"',
+    '&#38;': '&',
+    '&#60;': '<',
+    '&#62;': '>',
+    '&nbsp;': ' ',
+    '&ensp;': ' ',
+    '&emsp;': ' '
+  };
+  
+  return text.replace(/&(apos|quot|amp|lt|gt|#39|#34|#38|#60|#62|nbsp|ensp|emsp);/g, 
+    match => entities[match] || match);
 }
 
 // 使用新的过滤规则处理歌词
