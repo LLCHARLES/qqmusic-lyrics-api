@@ -1,4 +1,84 @@
 import axios from 'axios';
+import pako from 'pako';
+import CryptoJS from 'crypto-js';
+
+// QQ音乐逐字歌词解密工具
+class QrcDecoder {
+  static QQKey = '!@#)(*$%123ZXC!@!@#)(NHL';
+  
+  /**
+   * 解密 QRC 歌词
+   */
+  static decryptLyrics(encryptedLyrics) {
+    try {
+      if (!encryptedLyrics || encryptedLyrics.length === 0) {
+        return null;
+      }
+
+      // 16进制字符串转字节数组
+      const encryptedBytes = this.hexToBytes(encryptedLyrics);
+      
+      // 使用 crypto-js 进行 3DES 解密
+      const decrypted = this.tripleDesDecrypt(encryptedBytes);
+      
+      if (!decrypted) {
+        return null;
+      }
+
+      // 解压缩
+      const decompressed = pako.inflate(decrypted);
+      
+      // 转字符串
+      const result = new TextDecoder().decode(decompressed);
+      return result;
+    } catch (error) {
+      console.error('解密逐字歌词失败:', error);
+      return null;
+    }
+  }
+  
+  /**
+   * 16进制字符串转字节数组
+   */
+  static hexToBytes(hexString) {
+    const bytes = new Uint8Array(hexString.length / 2);
+    for (let i = 0; i < hexString.length; i += 2) {
+      bytes[i / 2] = parseInt(hexString.substr(i, 2), 16);
+    }
+    return bytes;
+  }
+  
+  /**
+   * 3DES 解密
+   */
+  static tripleDesDecrypt(inputBytes) {
+    try {
+      // 将密钥字符串转换为 WordArray
+      const key = CryptoJS.enc.Utf8.parse(this.QQKey);
+      
+      // 将输入字节数组转换为 WordArray
+      const encryptedWordArray = CryptoJS.lib.WordArray.create(inputBytes);
+      
+      // 3DES 解密 - 使用 ECB 模式，无 IV
+      const decrypted = CryptoJS.TripleDES.decrypt(
+        {
+          ciphertext: encryptedWordArray
+        },
+        key,
+        {
+          mode: CryptoJS.mode.ECB,
+          padding: CryptoJS.pad.Pkcs7
+        }
+      );
+      
+      // 转换回 Uint8Array
+      return CryptoJS.enc.Uint8Array.from(decrypted);
+    } catch (error) {
+      console.error('3DES 解密失败:', error);
+      return null;
+    }
+  }
+}
 
 // 歌曲映射表 - 直接映射到对应的MID
 const songMapping = {
@@ -74,7 +154,7 @@ export default async function handler(req, res) {
     
     console.log('找到歌曲:', { name: getSongName(song), artist: extractArtists(song), id: song.id });
     
-    // 获取歌词
+    // 获取歌词（包含逐字歌词）
     const lyrics = await getLyrics(song.mid || song.id);
     
     // 返回结果
@@ -90,7 +170,8 @@ export default async function handler(req, res) {
                     (!lyrics.translatedLyrics || lyrics.translatedLyrics.trim() === ''),
       plainLyrics: '',
       syncedLyrics: lyrics.syncedLyrics,
-      translatedLyrics: lyrics.translatedLyrics
+      translatedLyrics: lyrics.translatedLyrics,
+      yrcLyrics: lyrics.yrcLyrics || '' // 新增逐字歌词字段
     };
     
     res.status(200).json(response);
@@ -152,6 +233,7 @@ async function handleMappedSong(mappedMid, originalTrackName, originalArtistName
       plainLyrics: '',
       syncedLyrics: lyrics.syncedLyrics,
       translatedLyrics: lyrics.translatedLyrics,
+      yrcLyrics: lyrics.yrcLyrics || '', // 新增逐字歌词字段
       isMapped: true, // 标记这是映射版本
       originalTrackName: originalTrackName,
       originalArtistName: originalArtistName
@@ -577,8 +659,34 @@ function calculateDuration(interval) {
   return 0;
 }
 
-// 使用官方API获取歌词
+// 获取歌词（包含逐字歌词）
 async function getLyrics(songMid) {
+  try {
+    // 首先获取普通歌词（保持原有逻辑）
+    const standardLyrics = await getStandardLyrics(songMid);
+    
+    // 然后获取逐字歌词
+    const yrcLyrics = await getYrcLyrics(songMid);
+    
+    // 合并结果
+    return {
+      ...standardLyrics,
+      yrcLyrics: yrcLyrics || ''
+    };
+    
+  } catch (error) {
+    console.error('获取歌词失败:', error);
+    return { 
+      syncedLyrics: '', 
+      plainLyrics: '', 
+      translatedLyrics: '',
+      yrcLyrics: ''
+    };
+  }
+}
+
+// 原有的普通歌词获取函数（重命名）
+async function getStandardLyrics(songMid) {
   try {
     const currentMillis = Date.now();
     const callback = 'MusicJsonCallback_lrc';
@@ -638,12 +746,91 @@ async function getLyrics(songMid) {
     return { syncedLyrics, plainLyrics, translatedLyrics };
     
   } catch (error) {
-    console.error('获取歌词失败:', error);
+    console.error('获取普通歌词失败:', error);
     return { 
       syncedLyrics: '', 
       plainLyrics: '', 
       translatedLyrics: ''
     };
+  }
+}
+
+// 新增：获取逐字歌词
+async function getYrcLyrics(songMid) {
+  try {
+    const params = new URLSearchParams({
+      version: '15',
+      miniversion: '82',
+      lrctype: '4', // QRC 格式
+      musicid: songMid
+    });
+    
+    const response = await axios.post(
+      'https://c.y.qq.com/qqmusic/fcgi-bin/lyric_download.fcg',
+      params,
+      {
+        headers: {
+          'Referer': 'https://c.y.qq.com/',
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        },
+        timeout: 8000 // 8秒超时
+      }
+    );
+    
+    // 清理响应数据
+    let data = response.data.replace(/<!--|-->/g, '');
+    
+    // 使用正则表达式提取加密的歌词内容
+    const contentMatch = data.match(/<content>([^<]+)<\/content>/);
+    if (!contentMatch) {
+      console.log('未找到逐字歌词内容');
+      return null;
+    }
+    
+    const encryptedContent = contentMatch[1];
+    if (!encryptedContent) {
+      return null;
+    }
+    
+    // 解密逐字歌词
+    const decrypted = QrcDecoder.decryptLyrics(encryptedContent);
+    if (!decrypted) {
+      return null;
+    }
+    
+    // 解析解密后的内容
+    return parseDecryptedYrc(decrypted);
+    
+  } catch (error) {
+    console.error('获取逐字歌词失败:', error);
+    return null;
+  }
+}
+
+// 解析解密后的逐字歌词
+function parseDecryptedYrc(decryptedContent) {
+  try {
+    // 如果是 XML 格式，提取歌词内容
+    if (decryptedContent.includes('<QrcLyric>') || decryptedContent.includes('<Lyric_')) {
+      // 提取 LyricContent
+      const lyricMatch = decryptedContent.match(/LyricContent="([^"]*)"/);
+      if (lyricMatch && lyricMatch[1]) {
+        return lyricMatch[1];
+      }
+      
+      // 尝试其他可能的标签
+      const contentMatch = decryptedContent.match(/<content>([^<]+)<\/content>/);
+      if (contentMatch && contentMatch[1]) {
+        return contentMatch[1];
+      }
+    }
+    
+    // 如果不是 XML，直接返回解密内容
+    return decryptedContent;
+  } catch (error) {
+    console.error('解析逐字歌词失败:', error);
+    return decryptedContent; // 返回原始内容
   }
 }
 
