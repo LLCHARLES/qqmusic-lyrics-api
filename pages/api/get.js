@@ -174,44 +174,11 @@ async function getLyricsByMid(mid) {
     const response = await axios.get(lyricUrl);
     const data = response.data;
     
-    let syncedLyrics = '';
-    let plainLyrics = '';
-    let translatedLyrics = '';
-    let yrcLyrics = '';
-    
-    if (data?.code === 200 && data.data) {
-      // 使用新的过滤规则处理LRC歌词
-      if (data.data.lrc) {
-        syncedLyrics = filterLyricsWithNewRules(data.data.lrc);
-        plainLyrics = '';
-      }
-      
-      // 使用新的过滤规则处理翻译歌词
-      if (data.data.trans) {
-        translatedLyrics = filterLyricsWithNewRules(data.data.trans);
-      }
-      
-      // 使用改进的YRC过滤，传入已过滤的LRC歌词
-      if (data.data.yrc) {
-        yrcLyrics = filterYrcLyrics(data.data.yrc, syncedLyrics);
-      }
-    }
-    
-    return { 
-      syncedLyrics, 
-      plainLyrics, 
-      translatedLyrics,
-      yrcLyrics
-    };
+    return processLyricsData(data);
     
   } catch (error) {
     console.error('通过MID获取歌词失败:', error);
-    return { 
-      syncedLyrics: '', 
-      plainLyrics: '', 
-      translatedLyrics: '',
-      yrcLyrics: ''
-    };
+    return getEmptyLyrics();
   }
 }
 
@@ -579,82 +546,123 @@ function calculateDuration(interval) {
   return 0;
 }
 
-// 获取歌词（使用新的过滤规则）
+// 获取歌词（使用合并的过滤逻辑）
 async function getLyrics(songId) {
   try {
     const lyricUrl = `https://api.vkeys.cn/v2/music/tencent/lyric?id=${songId}`;
     const response = await axios.get(lyricUrl);
     const data = response.data;
     
-    let syncedLyrics = '';
-    let plainLyrics = '';
-    let translatedLyrics = '';
-    let yrcLyrics = '';
-    
-    if (data?.code === 200 && data.data) {
-      // 使用新的过滤规则处理LRC歌词
-      if (data.data.lrc) {
-        syncedLyrics = filterLyricsWithNewRules(data.data.lrc);
-        plainLyrics = '';
-      }
-      
-      // 使用新的过滤规则处理翻译歌词
-      if (data.data.trans) {
-        translatedLyrics = filterLyricsWithNewRules(data.data.trans);
-      }
-      
-      // 使用改进的YRC过滤，传入已过滤的LRC歌词
-      if (data.data.yrc) {
-        yrcLyrics = filterYrcLyrics(data.data.yrc, syncedLyrics);
-      }
-    }
-    
-    return { 
-      syncedLyrics, 
-      plainLyrics, 
-      translatedLyrics,
-      yrcLyrics
-    };
+    return processLyricsData(data);
     
   } catch (error) {
     console.error('获取歌词失败:', error);
-    return { 
-      syncedLyrics: '', 
-      plainLyrics: '', 
-      translatedLyrics: '',
-      yrcLyrics: ''
-    };
+    return getEmptyLyrics();
   }
 }
 
-// 使用新的过滤规则处理歌词
-function filterLyricsWithNewRules(lyricContent) {
-  if (!lyricContent) return '';
+// 合并的歌词数据处理函数
+function processLyricsData(data) {
+  let syncedLyrics = '';
+  let plainLyrics = '';
+  let translatedLyrics = '';
+  let yrcLyrics = '';
   
-  // 1) 将歌词按行分割，处理 Windows 换行符 \r\n
-  const lines = lyricContent.replace(/\r\n/g, '\n').split('\n');
-  
-  // 首先移除所有的标签行（[ti:], [ar:], [al:], [by:], [offset:] 等）
-  const filteredLines = lines.filter(line => {
-    const trimmed = line.trim();
-    // 移除所有标签行，但保留有时间轴的歌词行
-    return !(/^\[(ti|ar|al|by|offset|t_time|kana|lang|total):.*\]$/i.test(trimmed));
-  });
-  
-  // 解析每行，提取时间戳和文本内容
-  const parsedLines = [];
-  for (const line of filteredLines) {
-    const match = line.match(/^(\[[0-9:.]+\])(.*)$/);
-    if (match) {
-      parsedLines.push({
-        raw: line,
-        timestamp: match[1],
-        text: match[2].trim(),
-        plainText: match[2].trim().replace(/\[.*?\]/g, '') // 移除内嵌标签的纯文本
-      });
+  if (data?.code === 200 && data.data) {
+    // 处理LRC歌词
+    if (data.data.lrc) {
+      syncedLyrics = filterLyrics(data.data.lrc, 'lrc');
+      plainLyrics = '';
+    }
+    
+    // 处理翻译歌词
+    if (data.data.trans) {
+      translatedLyrics = filterLyrics(data.data.trans, 'lrc');
+    }
+    
+    // 处理YRC歌词，传入已过滤的LRC歌词用于时间轴参考
+    if (data.data.yrc) {
+      yrcLyrics = filterLyrics(data.data.yrc, 'yrc', syncedLyrics);
     }
   }
   
+  return { 
+    syncedLyrics, 
+    plainLyrics, 
+    translatedLyrics,
+    yrcLyrics
+  };
+}
+
+// 统一的歌词过滤函数
+function filterLyrics(lyricContent, type = 'lrc', referenceLyrics = '') {
+  if (!lyricContent) return '';
+  
+  // 基础预处理：分割行和移除元数据
+  const { lines, parsedLines } = preprocessLyricLines(lyricContent, type);
+  
+  if (type === 'lrc') {
+    return filterLrcLyrics(parsedLines);
+  } else if (type === 'yrc') {
+    return filterYrcLyrics(parsedLines, referenceLyrics);
+  }
+  
+  return '';
+}
+
+// 预处理歌词行（LRC和YRC共用）
+function preprocessLyricLines(lyricContent, type) {
+  // 统一的行分割处理
+  const lines = lyricContent.replace(/\r\n/g, '\n').split('\n');
+  
+  // 移除元数据标签行（LRC和YRC共用）
+  const filteredLines = lines.filter(line => {
+    const trimmed = line.trim();
+    return !(/^\[(ti|ar|al|by|offset|t_time|kana|lang|total):.*\]$/i.test(trimmed));
+  });
+  
+  let parsedLines = [];
+  
+  if (type === 'lrc') {
+    // 解析LRC格式行
+    for (const line of filteredLines) {
+      const match = line.match(/^(\[[0-9:.]+\])(.*)$/);
+      if (match) {
+        parsedLines.push({
+          raw: line,
+          timestamp: match[1],
+          text: match[2].trim(),
+          plainText: match[2].trim().replace(/\[.*?\]/g, ''),
+          type: 'lrc'
+        });
+      }
+    }
+  } else if (type === 'yrc') {
+    // 解析YRC格式行
+    for (const line of filteredLines) {
+      const match = line.match(/^\[(\d+),(\d+)\](.*)$/);
+      if (match) {
+        const startTime = parseInt(match[1]);
+        const duration = parseInt(match[2]);
+        const content = match[3].trim();
+        
+        parsedLines.push({
+          raw: line,
+          startTime,
+          duration,
+          content,
+          plainText: extractPlainTextFromYrc(content),
+          type: 'yrc'
+        });
+      }
+    }
+  }
+  
+  return { lines, parsedLines };
+}
+
+// LRC歌词过滤
+function filterLrcLyrics(parsedLines) {
   // 2) 基础序列 - 按时间戳排序
   let filtered = [...parsedLines];
   
@@ -803,13 +811,11 @@ function filterLyricsWithNewRules(lyricContent) {
   return result;
 }
 
-// 改进的YRC歌词过滤函数 - 基于LRC歌词定位有效起始位置
-function filterYrcLyrics(yrcContent, syncedLyrics) {
-  if (!yrcContent) return '';
-  
+// YRC歌词过滤
+function filterYrcLyrics(parsedLines, syncedLyrics) {
   // 如果LRC歌词为空，则使用备用过滤方案
   if (!syncedLyrics || syncedLyrics.trim() === '') {
-    return filterYrcLyricsFallback(yrcContent);
+    return filterYrcLyricsFallback(parsedLines);
   }
   
   // 1) 从LRC歌词中提取第一行有效歌词的时间戳
@@ -817,58 +823,37 @@ function filterYrcLyrics(yrcContent, syncedLyrics) {
   
   if (!firstLrcTime) {
     // 如果无法提取LRC时间戳，使用备用方案
-    return filterYrcLyricsFallback(yrcContent);
+    return filterYrcLyricsFallback(parsedLines);
   }
   
   console.log(`LRC第一行歌词时间: ${firstLrcTime}ms`);
   
-  // 2) 将YRC歌词按行分割
-  const lines = yrcContent.replace(/\r\n/g, '\n').split('\n');
-  
-  // 3) 移除元数据标签行
-  const filteredLines = lines.filter(line => {
-    const trimmed = line.trim();
-    return !(/^\[(ti|ar|al|by|offset|t_time|kana|lang|total):.*\]$/i.test(trimmed));
-  });
-  
-  // 4) 解析YRC行并找到有效起始位置
-  const parsedLines = [];
+  // 2) 找到有效起始位置
   let foundStart = false;
+  const filteredLines = [];
   
-  for (const line of filteredLines) {
-    const match = line.match(/^\[(\d+),(\d+)\](.*)$/);
-    if (match) {
-      const startTime = parseInt(match[1]);
-      const duration = parseInt(match[2]);
-      const content = match[3].trim();
-      
-      // 检查是否达到或超过LRC第一行的时间
-      // 添加一些容差，因为YRC可能比LRC稍早开始
-      if (!foundStart && startTime >= firstLrcTime - 2000) {
-        foundStart = true;
-        console.log(`找到YRC有效起始行: ${startTime}ms, 内容: ${extractPlainTextFromYrc(content).substring(0, 20)}...`);
-      }
-      
-      if (foundStart) {
-        parsedLines.push({
-          raw: line,
-          startTime,
-          duration,
-          content
-        });
-      }
+  for (const line of parsedLines) {
+    // 检查是否达到或超过LRC第一行的时间
+    // 添加一些容差，因为YRC可能比LRC稍早开始
+    if (!foundStart && line.startTime >= firstLrcTime - 2000) {
+      foundStart = true;
+      console.log(`找到YRC有效起始行: ${line.startTime}ms, 内容: ${line.plainText.substring(0, 20)}...`);
+    }
+    
+    if (foundStart) {
+      filteredLines.push(line);
     }
   }
   
-  // 5) 如果没找到基于时间的起始点，使用备用方案
-  if (parsedLines.length === 0) {
+  // 3) 如果没找到基于时间的起始点，使用备用方案
+  if (filteredLines.length === 0) {
     console.log('基于时间的过滤失败，使用备用方案');
-    return filterYrcLyricsFallback(yrcContent);
+    return filterYrcLyricsFallback(parsedLines);
   }
   
-  // 6) 对保留的行进行额外清理（移除可能的残留制作信息）
-  const cleanedLines = parsedLines.filter(line => {
-    const plainText = extractPlainTextFromYrc(line.content);
+  // 4) 对保留的行进行额外清理（移除可能的残留制作信息）
+  const cleanedLines = filteredLines.filter(line => {
+    const plainText = line.plainText;
     
     // 移除空行
     if (plainText.trim() === '') return false;
@@ -894,8 +879,41 @@ function filterYrcLyrics(yrcContent, syncedLyrics) {
   // 重新组合成YRC格式
   const result = cleanedLines.map(line => line.raw).join('\n');
   
-  console.log(`YRC过滤结果: 从${lines.length}行减少到${cleanedLines.length}行`);
+  console.log(`YRC过滤结果: 从${parsedLines.length}行减少到${cleanedLines.length}行`);
   return result;
+}
+
+// YRC备用过滤方案
+function filterYrcLyricsFallback(parsedLines) {
+  let foundLyricsStart = false;
+  const filteredLines = [];
+  
+  for (const line of parsedLines) {
+    const plainText = line.plainText;
+    
+    // 跳过空行
+    if (plainText.trim() === '') continue;
+    
+    // 跳过制作人员信息（通常在歌曲前30秒）
+    if (line.startTime < 30000 && isProductionLine(plainText, line.startTime)) {
+      continue;
+    }
+    
+    // 一旦找到非制作人员的歌词内容，标记开始
+    if (!foundLyricsStart && !isProductionLine(plainText, line.startTime)) {
+      foundLyricsStart = true;
+    }
+    
+    // 只有找到歌词开始后才添加行，或者如果是制作信息但时间靠后也添加
+    if (foundLyricsStart || line.startTime >= 30000) {
+      // 额外检查版权和标签
+      if (!isLicenseWarningLine(plainText) && !containsBracketTag(plainText)) {
+        filteredLines.push(line);
+      }
+    }
+  }
+  
+  return filteredLines.map(line => line.raw).join('\n');
 }
 
 // 从LRC歌词中提取第一行有效歌词的时间戳（转换为毫秒）
@@ -917,79 +935,6 @@ function extractFirstLrcTimestamp(lrcContent) {
   }
   
   return null;
-}
-
-// 判断是否为制作人员行
-function isProductionLine(plainText, startTime) {
-  // 制作人员关键词
-  const productionKeywords = [
-    '词', '曲', '编曲', '制作人', '合声', '合声编写', '吉他', '贝斯', '鼓',
-    '录音助理', '录音工程', '混音工程', '录音', '混音', '工程', '助理', '编写',
-    'lyrics', 'lyric', 'composed', 'compose', 'producer', 'produce', 'produced'
-  ];
-  
-  // 检查是否包含制作关键词
-  for (const keyword of productionKeywords) {
-    if (plainText.includes(keyword)) {
-      return true;
-    }
-  }
-  
-  // 检查是否包含冒号（制作人员信息常见格式）
-  if (containsColon(plainText)) {
-    return true;
-  }
-  
-  return false;
-}
-
-// 备用过滤方案（当基于时间的过滤失败时使用）
-function filterYrcLyricsFallback(yrcContent) {
-  if (!yrcContent) return '';
-  
-  const lines = yrcContent.replace(/\r\n/g, '\n').split('\n');
-  
-  // 移除元数据标签行
-  const filteredLines = lines.filter(line => {
-    const trimmed = line.trim();
-    return !(/^\[(ti|ar|al|by|offset|t_time|kana|lang|total):.*\]$/i.test(trimmed));
-  });
-  
-  // 解析并过滤
-  const parsedLines = [];
-  let foundLyricsStart = false;
-  
-  for (const line of filteredLines) {
-    const match = line.match(/^\[(\d+),(\d+)\](.*)$/);
-    if (match) {
-      const startTime = parseInt(match[1]);
-      const content = match[3].trim();
-      const plainText = extractPlainTextFromYrc(content);
-      
-      // 跳过空行
-      if (plainText.trim() === '') continue;
-      
-      // 跳过制作人员信息（通常在歌曲前30秒）
-      if (startTime < 30000 && isProductionLine(plainText, startTime)) {
-        continue;
-      }
-      
-      // 一旦找到非制作人员的歌词内容，标记开始
-      if (!foundLyricsStart && !isProductionLine(plainText, startTime)) {
-        foundLyricsStart = true;
-      }
-      
-      // 只有找到歌词开始后才添加行，或者如果是制作信息但时间靠后也添加
-      if (foundLyricsStart || startTime >= 30000) {
-        // 额外检查版权和标签
-        if (!isLicenseWarningLine(plainText) && !containsBracketTag(plainText)) {
-          parsedLines.push(line);
-        }
-      }
-    }
-  }
-  
-  return parsedLines.join('\n');
 }
 
 // 从YRC内容中提取纯文本（移除时间标记）
@@ -1058,19 +1003,36 @@ function isLicenseWarningLine(text) {
   return count >= 3; // 降低阈值到3
 }
 
-// 辅助函数 - 从被删除的冒号行中提取制作人员信息
-function extractNamesFromRemovedColonLines(removedLines) {
-  const creditKeywords = ['lyrics', 'lyric', 'composed', 'compose', 'producer', 'produce', 'produced', '词', '曲', '制作人'];
-  const credits = [];
+// 判断是否为制作人员行
+function isProductionLine(plainText, startTime) {
+  // 制作人员关键词
+  const productionKeywords = [
+    '词', '曲', '编曲', '制作人', '合声', '合声编写', '吉他', '贝斯', '鼓',
+    '录音助理', '录音工程', '混音工程', '录音', '混音', '工程', '助理', '编写',
+    'lyrics', 'lyric', 'composed', 'compose', 'producer', 'produce', 'produced'
+  ];
   
-  for (const line of removedLines) {
-    for (const keyword of creditKeywords) {
-      if (line.toLowerCase().includes(keyword.toLowerCase())) {
-        credits.push(line);
-        break;
-      }
+  // 检查是否包含制作关键词
+  for (const keyword of productionKeywords) {
+    if (plainText.includes(keyword)) {
+      return true;
     }
   }
   
-  return credits;
+  // 检查是否包含冒号（制作人员信息常见格式）
+  if (containsColon(plainText)) {
+    return true;
+  }
+  
+  return false;
+}
+
+// 获取空的歌词对象
+function getEmptyLyrics() {
+  return { 
+    syncedLyrics: '', 
+    plainLyrics: '', 
+    translatedLyrics: '',
+    yrcLyrics: ''
+  };
 }
