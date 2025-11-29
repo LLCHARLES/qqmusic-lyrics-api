@@ -129,8 +129,8 @@ function checkSongMapping(processedTrackName, processedArtists, originalTrackNam
 // 处理映射歌曲
 async function handleMappedSong(mappedMid, originalTrackName, originalArtistName, res) {
   try {
-    // 直接使用映射的MID获取歌词
-    const lyrics = await getLyrics(mappedMid);
+    // 对于映射歌曲，使用MID获取歌词
+    const lyrics = await getLyricsByMid(mappedMid);
     
     // 尝试获取歌曲信息
     let songInfo = null;
@@ -164,6 +164,54 @@ async function handleMappedSong(mappedMid, originalTrackName, originalArtistName
   } catch (error) {
     console.error('处理映射歌曲失败:', error);
     res.status(500).json({ error: 'Failed to get mapped song', message: error.message });
+  }
+}
+
+// 通过MID获取歌词
+async function getLyricsByMid(mid) {
+  try {
+    const lyricUrl = `https://api.vkeys.cn/v2/music/tencent/lyric?mid=${mid}`;
+    const response = await axios.get(lyricUrl);
+    const data = response.data;
+    
+    let syncedLyrics = '';
+    let plainLyrics = '';
+    let translatedLyrics = '';
+    let yrcLyrics = '';
+    
+    if (data?.code === 200 && data.data) {
+      // 使用新的过滤规则处理LRC歌词
+      if (data.data.lrc) {
+        syncedLyrics = filterLyricsWithNewRules(data.data.lrc);
+        plainLyrics = '';
+      }
+      
+      // 使用新的过滤规则处理翻译歌词
+      if (data.data.trans) {
+        translatedLyrics = filterLyricsWithNewRules(data.data.trans);
+      }
+      
+      // 使用改进的YRC过滤，传入已过滤的LRC歌词
+      if (data.data.yrc) {
+        yrcLyrics = filterYrcLyrics(data.data.yrc, syncedLyrics);
+      }
+    }
+    
+    return { 
+      syncedLyrics, 
+      plainLyrics, 
+      translatedLyrics,
+      yrcLyrics
+    };
+    
+  } catch (error) {
+    console.error('通过MID获取歌词失败:', error);
+    return { 
+      syncedLyrics: '', 
+      plainLyrics: '', 
+      translatedLyrics: '',
+      yrcLyrics: ''
+    };
   }
 }
 
