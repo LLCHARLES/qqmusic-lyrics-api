@@ -1,114 +1,4 @@
 import axios from 'axios';
-import pako from 'pako';
-import CryptoJS from 'crypto-js';
-
-// QQ音乐逐字歌词解密工具
-class QrcDecoder {
-  static QQKey = '!@#)(*$%123ZXC!@!@#)(NHL';
-  
-  /**
-   * 解密 QRC 歌词
-   */
-  static decryptLyrics(encryptedLyrics) {
-    try {
-      if (!encryptedLyrics || encryptedLyrics.length === 0) {
-        console.log('解密失败：加密内容为空');
-        return null;
-      }
-
-      // 检查是否是有效的16进制字符串
-      if (!/^[0-9A-Fa-f]+$/.test(encryptedLyrics)) {
-        console.log('解密失败：不是有效的16进制字符串');
-        return null;
-      }
-
-      // 16进制字符串转字节数组
-      const encryptedBytes = this.hexToBytes(encryptedLyrics);
-      console.log(`加密字节长度: ${encryptedBytes.length}`);
-      
-      // 使用 crypto-js 进行 3DES 解密
-      const decrypted = this.tripleDesDecrypt(encryptedBytes);
-      
-      if (!decrypted || decrypted.length === 0) {
-        console.log('解密失败：解密后内容为空');
-        return null;
-      }
-
-      console.log(`解密后字节长度: ${decrypted.length}`);
-      
-      // 解压缩
-      let decompressed;
-      try {
-        decompressed = pako.inflate(decrypted);
-        console.log(`解压缩后字节长度: ${decompressed.length}`);
-      } catch (inflateError) {
-        console.log('解压缩失败，尝试直接使用解密内容:', inflateError.message);
-        // 如果解压缩失败，可能内容没有被压缩，直接使用解密内容
-        decompressed = decrypted;
-      }
-      
-      // 转字符串
-      const result = new TextDecoder().decode(decompressed);
-      
-      if (!result || result.trim().length === 0) {
-        console.log('解密失败：转换字符串后内容为空');
-        return null;
-      }
-      
-      return result;
-    } catch (error) {
-      console.error('解密逐字歌词失败:', error);
-      return null;
-    }
-  }
-  
-  /**
-   * 16进制字符串转字节数组
-   */
-  static hexToBytes(hexString) {
-    try {
-      const bytes = new Uint8Array(hexString.length / 2);
-      for (let i = 0; i < hexString.length; i += 2) {
-        bytes[i / 2] = parseInt(hexString.substr(i, 2), 16);
-      }
-      return bytes;
-    } catch (error) {
-      console.error('16进制转换失败:', error);
-      return new Uint8Array(0);
-    }
-  }
-  
-  /**
-   * 3DES 解密
-   */
-  static tripleDesDecrypt(inputBytes) {
-    try {
-      // 将密钥字符串转换为 WordArray
-      const key = CryptoJS.enc.Utf8.parse(this.QQKey);
-      
-      // 将输入字节数组转换为 WordArray
-      const encryptedWordArray = CryptoJS.lib.WordArray.create(inputBytes);
-      
-      // 3DES 解密 - 使用 ECB 模式，无 IV
-      const decrypted = CryptoJS.TripleDES.decrypt(
-        {
-          ciphertext: encryptedWordArray
-        },
-        key,
-        {
-          mode: CryptoJS.mode.ECB,
-          padding: CryptoJS.pad.Pkcs7
-        }
-      );
-      
-      // 转换回 Uint8Array
-      return CryptoJS.enc.Uint8Array.from(decrypted);
-    } catch (error) {
-      console.error('3DES 解密失败:', error);
-      return null;
-    }
-  }
-}
 
 // 歌曲映射表 - 直接映射到对应的MID
 const songMapping = {
@@ -160,19 +50,11 @@ export default async function handler(req, res) {
   }
   
   try {
-    console.log('搜索请求:', { 
-      trackName: finalTrackName, 
-      artistName: finalArtistName
-    });
+    console.log('搜索请求:', { trackName: finalTrackName, artistName: finalArtistName });
     
     // 预处理
     const processedTrackName = preprocessTrackName(finalTrackName);
     const processedArtists = preprocessArtists(finalArtistName);
-    
-    console.log('预处理结果:', {
-      processedTrackName,
-      processedArtists
-    });
     
     // 检查是否需要直接映射到特定MID
     const mappedMid = checkSongMapping(processedTrackName, processedArtists, finalTrackName, finalArtistName);
@@ -190,34 +72,27 @@ export default async function handler(req, res) {
       return res.status(404).json({ error: 'Song not found', message: '未找到匹配的歌曲' });
     }
     
-    console.log('找到歌曲详情:', { 
-      name: getSongName(song), 
-      artist: extractArtists(song), 
-      id: song.id,
-      mid: song.mid
-    });
+    console.log('找到歌曲:', { name: getSongName(song), artist: extractArtists(song), id: song.id });
     
-    // 获取歌词（包含逐字歌词）
-    const lyrics = await getLyrics(song.mid || song.id);
+    // 获取歌词
+    const lyrics = await getLyrics(song.id);
     
     // 返回结果
     const response = {
       id: song.id,
-      mid: song.mid,
       name: getSongName(song) || finalTrackName,
       trackName: getSongName(song) || finalTrackName,
       artistName: extractArtists(song),
       albumName: extractAlbumName(song),
       duration: calculateDuration(song.interval),
+      // 修复 instrumental 判断逻辑
       instrumental: (!lyrics.syncedLyrics || lyrics.syncedLyrics.trim() === '') && 
                     (!lyrics.translatedLyrics || lyrics.translatedLyrics.trim() === ''),
-      plainLyrics: '',
+      plainLyrics: '', // 设置为空字符串，不移除该字段
       syncedLyrics: lyrics.syncedLyrics,
       translatedLyrics: lyrics.translatedLyrics,
-      yrcLyrics: lyrics.yrcLyrics || '' // 新增逐字歌词字段
+      yrcLyrics: lyrics.yrcLyrics // 新增 yrcLyrics 字段
     };
-    
-    console.log('API响应完成，逐字歌词长度:', response.yrcLyrics.length);
     
     res.status(200).json(response);
     
@@ -278,7 +153,7 @@ async function handleMappedSong(mappedMid, originalTrackName, originalArtistName
       plainLyrics: '',
       syncedLyrics: lyrics.syncedLyrics,
       translatedLyrics: lyrics.translatedLyrics,
-      yrcLyrics: lyrics.yrcLyrics || '', // 新增逐字歌词字段
+      yrcLyrics: lyrics.yrcLyrics,
       isMapped: true, // 标记这是映射版本
       originalTrackName: originalTrackName,
       originalArtistName: originalArtistName
@@ -351,8 +226,9 @@ function preprocessTrackName(trackName) {
   return processed || trackName.split(/[-\s–—]/)[0].trim();
 }
 
-// 使用官方API搜索歌曲
+// 搜索歌曲
 async function searchSong(trackName, artists, originalTrackName, originalArtistName) {
+  // 判断是否需要简化搜索
   const shouldSimplify = trackName.length > 30 || 
     / - | – | — |\(|\)|《|》|动画|剧集|主题曲|anniversary|theme song|version|remastered|mix|edit|致.*先生|———/i.test(trackName);
   
@@ -361,59 +237,27 @@ async function searchSong(trackName, artists, originalTrackName, originalArtistN
     return await simplifiedSearch(trackName, artists, originalTrackName, originalArtistName);
   }
   
-  // 使用官方API搜索 - 限制返回3个结果
+  // 正常搜索 - 限制返回3个结果
   for (const artist of artists) {
+    const searchUrl = `https://api.vkeys.cn/v2/music/tencent/search/song?word=${encodeURIComponent(trackName + ' ' + artist)}&num=3`;
+    
     try {
-      const searchData = {
-        req_1: {
-          method: "DoSearchForQQMusicDesktop",
-          module: "music.search.SearchCgiService",
-          param: {
-            num_per_page: 3,
-            page_num: 1,
-            query: trackName + ' ' + artist,
-            search_type: 0
-          }
-        }
-      };
-      
-      const response = await axios.post('https://u.y.qq.com/cgi-bin/musicu.fcg', searchData, {
-        headers: {
-          'Referer': 'https://c.y.qq.com/',
-          'Content-Type': 'application/json'
-        }
-      });
-      
+      const response = await axios.get(searchUrl);
       const data = response.data;
       
-      if (data?.req_1?.data?.body?.song?.list?.length > 0) {
-        const songs = transformSearchResults(data.req_1.data.body.song.list);
-        const match = findBestMatch(songs, trackName, artists, originalTrackName, originalArtistName);
+      if (data?.code === 200 && data.data?.length > 0) {
+        const match = findBestMatch(data.data, trackName, artists, originalTrackName, originalArtistName);
         if (match) return match;
       }
     } catch (error) {
-      console.error('官方API搜索失败:', error);
+      console.error('搜索失败:', error);
     }
   }
   
   return null;
 }
 
-// 转换官方API搜索结果格式
-function transformSearchResults(songList) {
-  return songList.map(song => ({
-    id: song.id,
-    mid: song.mid,
-    name: song.name,
-    title: song.name,
-    singer: song.singer,
-    album: song.album,
-    interval: song.interval,
-    songname: song.name
-  }));
-}
-
-// 简化搜索 - 使用官方API
+// 简化搜索
 async function simplifiedSearch(trackName, artists, originalTrackName, originalArtistName) {
   const strategies = [
     // 策略1: 核心歌名 + 艺术家
@@ -433,31 +277,14 @@ async function simplifiedSearch(trackName, artists, originalTrackName, originalA
       const keywords = strategies[i]();
       
       for (const keyword of keywords) {
-        const searchData = {
-          req_1: {
-            method: "DoSearchForQQMusicDesktop",
-            module: "music.search.SearchCgiService",
-            param: {
-              num_per_page: "3",
-              page_num: "1",
-              query: keyword,
-              search_type: 0
-            }
-          }
-        };
+        // 限制返回3个结果
+        const searchUrl = `https://api.vkeys.cn/v2/music/tencent/search/song?word=${encodeURIComponent(keyword)}&num=3`;
         
-        const response = await axios.post('https://u.y.qq.com/cgi-bin/musicu.fcg', searchData, {
-          headers: {
-            'Referer': 'https://c.y.qq.com/',
-            'Content-Type': 'application/json'
-          }
-        });
-        
+        const response = await axios.get(searchUrl);
         const data = response.data;
         
-        if (data?.req_1?.data?.body?.song?.list?.length > 0) {
-          const songs = transformSearchResults(data.req_1.data.body.song.list);
-          const match = findBestMatch(songs, trackName, artists, originalTrackName, originalArtistName);
+        if (data?.code === 200 && data.data?.length > 0) {
+          const match = findBestMatch(data.data, trackName, artists, originalTrackName, originalArtistName);
           if (match) {
             return match;
           }
@@ -652,7 +479,7 @@ function isCloseMatch(songTitle, targetTitle) {
 // 提取核心部分（日文/中文）
 function extractCorePart(text) {
   const japaneseOrChineseMatch = text.match(/[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]+/);
-  return japaneseOrChineseMatch ? japaneseOrChineseMatch[0] : text.split(/\s+/)[0] || text;
+  return japaneseOrChineseMatch ? japaneseOrChineseMatch[0] : text.split(/\s+/)[0];
 }
 
 // 获取歌曲名称
@@ -704,21 +531,41 @@ function calculateDuration(interval) {
   return 0;
 }
 
-// 获取歌词（包含逐字歌词）
-async function getLyrics(songMid) {
+// 获取歌词（使用新的过滤规则）
+async function getLyrics(songId) {
   try {
-    console.log(`开始获取歌词，歌曲MID: ${songMid}`);
+    const lyricUrl = `https://api.vkeys.cn/v2/music/tencent/lyric?id=${songId}`;
+    const response = await axios.get(lyricUrl);
+    const data = response.data;
     
-    // 首先获取普通歌词（保持原有逻辑）
-    const standardLyrics = await getStandardLyrics(songMid);
+    let syncedLyrics = '';
+    let plainLyrics = '';
+    let translatedLyrics = '';
+    let yrcLyrics = '';
     
-    // 然后获取逐字歌词
-    const yrcLyrics = await getYrcLyrics(songMid);
+    if (data?.code === 200 && data.data) {
+      // 使用新的过滤规则处理LRC歌词
+      if (data.data.lrc) {
+        syncedLyrics = filterLyricsWithNewRules(data.data.lrc);
+        plainLyrics = '';
+      }
+      
+      // 使用新的过滤规则处理翻译歌词
+      if (data.data.trans) {
+        translatedLyrics = filterLyricsWithNewRules(data.data.trans);
+      }
+      
+      // 使用改进的YRC过滤，传入已过滤的LRC歌词
+      if (data.data.yrc) {
+        yrcLyrics = filterYrcLyrics(data.data.yrc, syncedLyrics);
+      }
+    }
     
-    // 合并结果
-    return {
-      ...standardLyrics,
-      yrcLyrics: yrcLyrics || ''
+    return { 
+      syncedLyrics, 
+      plainLyrics, 
+      translatedLyrics,
+      yrcLyrics
     };
     
   } catch (error) {
@@ -730,241 +577,6 @@ async function getLyrics(songMid) {
       yrcLyrics: ''
     };
   }
-}
-
-// 原有的普通歌词获取函数（重命名）
-async function getStandardLyrics(songMid) {
-  try {
-    const currentMillis = Date.now();
-    const callback = 'MusicJsonCallback_lrc';
-    
-    const params = new URLSearchParams({
-      callback: callback,
-      pcachetime: currentMillis.toString(),
-      songmid: songMid,
-      g_tk: '5381',
-      jsonpCallback: callback,
-      loginUin: '0',
-      hostUin: '0',
-      format: 'jsonp',
-      inCharset: 'utf8',
-      outCharset: 'utf-8',
-      notice: '0',
-      platform: 'yqq',
-      needNewCode: '0'
-    });
-    
-    const response = await axios.get(`https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg?${params}`, {
-      headers: {
-        'Referer': 'https://c.y.qq.com/'
-      }
-    });
-    
-    let data = response.data;
-    
-    // 处理JSONP响应
-    if (data.startsWith(callback)) {
-      data = data.replace(callback + '(', '').slice(0, -1);
-    }
-    
-    const lyricData = JSON.parse(data);
-    
-    let syncedLyrics = '';
-    let plainLyrics = '';
-    let translatedLyrics = '';
-    
-    if (lyricData.lyric) {
-      // 解码Base64歌词
-      const decodedLyric = Buffer.from(lyricData.lyric, 'base64').toString('utf-8');
-      // 解码HTML实体
-      const decodedWithEntities = decodeHtmlEntities(decodedLyric);
-      syncedLyrics = filterLyricsWithNewRules(decodedWithEntities);
-      plainLyrics = '';
-    }
-    
-    if (lyricData.trans) {
-      // 解码Base64翻译歌词
-      const decodedTrans = Buffer.from(lyricData.trans, 'base64').toString('utf-8');
-      // 解码HTML实体
-      const decodedTransWithEntities = decodeHtmlEntities(decodedTrans);
-      translatedLyrics = filterLyricsWithNewRules(decodedTransWithEntities);
-    }
-    
-    return { syncedLyrics, plainLyrics, translatedLyrics };
-    
-  } catch (error) {
-    console.error('获取普通歌词失败:', error);
-    return { 
-      syncedLyrics: '', 
-      plainLyrics: '', 
-      translatedLyrics: ''
-    };
-  }
-}
-
-// 新增：获取逐字歌词
-async function getYrcLyrics(songMid) {
-  try {
-    console.log(`开始获取逐字歌词，歌曲MID: ${songMid}`);
-    
-    const params = new URLSearchParams({
-      version: '15',
-      miniversion: '82',
-      lrctype: '4', // QRC 格式
-      musicid: songMid
-    });
-    
-    const response = await axios.post(
-      'https://c.y.qq.com/qqmusic/fcgi-bin/lyric_download.fcg',
-      params,
-      {
-        headers: {
-          'Referer': 'https://c.y.qq.com/',
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        },
-        timeout: 8000 // 8秒超时
-      }
-    );
-    
-    // 清理响应数据
-    let data = response.data.replace(/<!--|-->/g, '');
-    console.log('逐字歌词接口原始响应:', data.substring(0, 500)); // 只打印前500字符用于调试
-    
-    // 使用正则表达式提取加密的歌词内容 - 尝试多种可能的标签
-    let encryptedContent = null;
-    
-    // 尝试 <content> 标签
-    const contentMatch = data.match(/<content>([^<]+)<\/content>/);
-    if (contentMatch) {
-      encryptedContent = contentMatch[1];
-      console.log('从<content>标签找到加密内容，长度:', encryptedContent.length);
-    }
-    
-    // 如果没找到，尝试 <contentts> 标签（翻译内容）
-    if (!encryptedContent) {
-      const contentTsMatch = data.match(/<contentts>([^<]+)<\/contentts>/);
-      if (contentTsMatch) {
-        encryptedContent = contentTsMatch[1];
-        console.log('从<contentts>标签找到加密内容，长度:', encryptedContent.length);
-      }
-    }
-    
-    // 如果还是没找到，尝试 <contentroma> 标签（罗马音）
-    if (!encryptedContent) {
-      const contentRomaMatch = data.match(/<contentroma>([^<]+)<\/contentroma>/);
-      if (contentRomaMatch) {
-        encryptedContent = contentRomaMatch[1];
-        console.log('从<contentroma>标签找到加密内容，长度:', encryptedContent.length);
-      }
-    }
-    
-    if (!encryptedContent) {
-      console.log('未找到任何加密的歌词内容');
-      console.log('响应中包含的标签:', data.match(/<(\w+)>/g)?.slice(0, 10) || '无标签');
-      return null;
-    }
-    
-    console.log('加密内容前100字符:', encryptedContent.substring(0, 100));
-    
-    // 解密逐字歌词
-    const decrypted = QrcDecoder.decryptLyrics(encryptedContent);
-    if (!decrypted) {
-      console.log('解密失败，返回null');
-      return null;
-    }
-    
-    console.log('解密成功，内容长度:', decrypted.length);
-    console.log('解密内容前200字符:', decrypted.substring(0, 200));
-    
-    // 解析解密后的内容
-    const result = parseDecryptedYrc(decrypted);
-    console.log('解析后的逐字歌词长度:', result?.length || 0);
-    
-    return result;
-    
-  } catch (error) {
-    console.error('获取逐字歌词失败:', error.message);
-    return null;
-  }
-}
-
-// 解析解密后的逐字歌词
-function parseDecryptedYrc(decryptedContent) {
-  try {
-    console.log('开始解析解密内容，类型:', typeof decryptedContent);
-    
-    if (!decryptedContent) {
-      console.log('解析失败：解密内容为空');
-      return null;
-    }
-
-    // 如果是 XML 格式，提取歌词内容
-    if (decryptedContent.includes('<QrcLyric>') || decryptedContent.includes('<Lyric_')) {
-      console.log('检测到XML格式内容');
-      
-      // 提取 LyricContent 属性
-      const lyricMatch = decryptedContent.match(/LyricContent="([^"]*)"/);
-      if (lyricMatch && lyricMatch[1]) {
-        console.log('从LyricContent属性提取到内容');
-        return lyricMatch[1];
-      }
-      
-      // 尝试 CDATA 内容
-      const cdataMatch = decryptedContent.match(/<!\[CDATA\[(.*?)\]\]>/s);
-      if (cdataMatch && cdataMatch[1]) {
-        console.log('从CDATA提取到内容');
-        return cdataMatch[1];
-      }
-      
-      // 尝试直接提取标签内容
-      const directMatch = decryptedContent.match(/<content>([^<]+)<\/content>/);
-      if (directMatch && directMatch[1]) {
-        console.log('从<content>标签提取到内容');
-        return directMatch[1];
-      }
-      
-      console.log('XML解析失败，返回原始内容');
-      return decryptedContent;
-    }
-    
-    // 检查是否是纯文本的逐字歌词格式（包含时间轴）
-    if (decryptedContent.includes('[') && decryptedContent.includes(']')) {
-      console.log('检测到可能的时间轴格式');
-      // 可能是直接的逐字歌词格式，直接返回
-      return decryptedContent;
-    }
-    
-    console.log('无法识别的内容格式，返回原始内容');
-    return decryptedContent;
-  } catch (error) {
-    console.error('解析逐字歌词失败:', error);
-    return decryptedContent; // 返回原始内容
-  }
-}
-
-// HTML实体解码函数
-function decodeHtmlEntities(text) {
-  if (!text) return '';
-  
-  const entities = {
-    '&apos;': "'",
-    '&quot;': '"',
-    '&amp;': '&',
-    '&lt;': '<',
-    '&gt;': '>',
-    '&#39;': "'",
-    '&#34;': '"',
-    '&#38;': '&',
-    '&#60;': '<',
-    '&#62;': '>',
-    '&nbsp;': ' ',
-    '&ensp;': ' ',
-    '&emsp;': ' '
-  };
-  
-  return text.replace(/&(apos|quot|amp|lt|gt|#39|#34|#38|#60|#62|nbsp|ensp|emsp);/g, 
-    match => entities[match] || match);
 }
 
 // 使用新的过滤规则处理歌词
@@ -1143,6 +755,223 @@ function filterLyricsWithNewRules(lyricContent) {
   return result;
 }
 
+// 改进的YRC歌词过滤函数 - 基于LRC歌词定位有效起始位置
+function filterYrcLyrics(yrcContent, syncedLyrics) {
+  if (!yrcContent) return '';
+  
+  // 如果LRC歌词为空，则使用备用过滤方案
+  if (!syncedLyrics || syncedLyrics.trim() === '') {
+    return filterYrcLyricsFallback(yrcContent);
+  }
+  
+  // 1) 从LRC歌词中提取第一行有效歌词的时间戳
+  const firstLrcTime = extractFirstLrcTimestamp(syncedLyrics);
+  
+  if (!firstLrcTime) {
+    // 如果无法提取LRC时间戳，使用备用方案
+    return filterYrcLyricsFallback(yrcContent);
+  }
+  
+  console.log(`LRC第一行歌词时间: ${firstLrcTime}ms`);
+  
+  // 2) 将YRC歌词按行分割
+  const lines = yrcContent.replace(/\r\n/g, '\n').split('\n');
+  
+  // 3) 移除元数据标签行
+  const filteredLines = lines.filter(line => {
+    const trimmed = line.trim();
+    return !(/^\[(ti|ar|al|by|offset|t_time|kana|lang|total):.*\]$/i.test(trimmed));
+  });
+  
+  // 4) 解析YRC行并找到有效起始位置
+  const parsedLines = [];
+  let foundStart = false;
+  
+  for (const line of filteredLines) {
+    const match = line.match(/^\[(\d+),(\d+)\](.*)$/);
+    if (match) {
+      const startTime = parseInt(match[1]);
+      const duration = parseInt(match[2]);
+      const content = match[3].trim();
+      
+      // 检查是否达到或超过LRC第一行的时间
+      // 添加一些容差，因为YRC可能比LRC稍早开始
+      if (!foundStart && startTime >= firstLrcTime - 2000) {
+        foundStart = true;
+        console.log(`找到YRC有效起始行: ${startTime}ms, 内容: ${extractPlainTextFromYrc(content).substring(0, 20)}...`);
+      }
+      
+      if (foundStart) {
+        parsedLines.push({
+          raw: line,
+          startTime,
+          duration,
+          content
+        });
+      }
+    }
+  }
+  
+  // 5) 如果没找到基于时间的起始点，使用备用方案
+  if (parsedLines.length === 0) {
+    console.log('基于时间的过滤失败，使用备用方案');
+    return filterYrcLyricsFallback(yrcContent);
+  }
+  
+  // 6) 对保留的行进行额外清理（移除可能的残留制作信息）
+  const cleanedLines = parsedLines.filter(line => {
+    const plainText = extractPlainTextFromYrc(line.content);
+    
+    // 移除空行
+    if (plainText.trim() === '') return false;
+    
+    // 移除明显的制作人员行（即使它们在有效时间后）
+    if (isProductionLine(plainText, line.startTime)) {
+      return false;
+    }
+    
+    // 移除版权警告行
+    if (isLicenseWarningLine(plainText)) {
+      return false;
+    }
+    
+    // 移除包含标签的行
+    if (containsBracketTag(plainText)) {
+      return false;
+    }
+    
+    return true;
+  });
+  
+  // 重新组合成YRC格式
+  const result = cleanedLines.map(line => line.raw).join('\n');
+  
+  console.log(`YRC过滤结果: 从${lines.length}行减少到${cleanedLines.length}行`);
+  return result;
+}
+
+// 从LRC歌词中提取第一行有效歌词的时间戳（转换为毫秒）
+function extractFirstLrcTimestamp(lrcContent) {
+  if (!lrcContent) return null;
+  
+  const lines = lrcContent.split('\n');
+  
+  for (const line of lines) {
+    const match = line.match(/^\[(\d+):(\d+)\.(\d+)\]/);
+    if (match) {
+      const minutes = parseInt(match[1]);
+      const seconds = parseInt(match[2]);
+      const hundredths = parseInt(match[3]);
+      
+      // 转换为毫秒
+      return (minutes * 60 + seconds) * 1000 + hundredths * 10;
+    }
+  }
+  
+  return null;
+}
+
+// 判断是否为制作人员行
+function isProductionLine(plainText, startTime) {
+  // 制作人员关键词
+  const productionKeywords = [
+    '词', '曲', '编曲', '制作人', '合声', '合声编写', '吉他', '贝斯', '鼓',
+    '录音助理', '录音工程', '混音工程', '录音', '混音', '工程', '助理', '编写',
+    'lyrics', 'lyric', 'composed', 'compose', 'producer', 'produce', 'produced'
+  ];
+  
+  // 检查是否包含制作关键词
+  for (const keyword of productionKeywords) {
+    if (plainText.includes(keyword)) {
+      return true;
+    }
+  }
+  
+  // 检查是否包含冒号（制作人员信息常见格式）
+  if (containsColon(plainText)) {
+    return true;
+  }
+  
+  return false;
+}
+
+// 备用过滤方案（当基于时间的过滤失败时使用）
+function filterYrcLyricsFallback(yrcContent) {
+  if (!yrcContent) return '';
+  
+  const lines = yrcContent.replace(/\r\n/g, '\n').split('\n');
+  
+  // 移除元数据标签行
+  const filteredLines = lines.filter(line => {
+    const trimmed = line.trim();
+    return !(/^\[(ti|ar|al|by|offset|t_time|kana|lang|total):.*\]$/i.test(trimmed));
+  });
+  
+  // 解析并过滤
+  const parsedLines = [];
+  let foundLyricsStart = false;
+  
+  for (const line of filteredLines) {
+    const match = line.match(/^\[(\d+),(\d+)\](.*)$/);
+    if (match) {
+      const startTime = parseInt(match[1]);
+      const content = match[3].trim();
+      const plainText = extractPlainTextFromYrc(content);
+      
+      // 跳过空行
+      if (plainText.trim() === '') continue;
+      
+      // 跳过制作人员信息（通常在歌曲前30秒）
+      if (startTime < 30000 && isProductionLine(plainText, startTime)) {
+        continue;
+      }
+      
+      // 一旦找到非制作人员的歌词内容，标记开始
+      if (!foundLyricsStart && !isProductionLine(plainText, startTime)) {
+        foundLyricsStart = true;
+      }
+      
+      // 只有找到歌词开始后才添加行，或者如果是制作信息但时间靠后也添加
+      if (foundLyricsStart || startTime >= 30000) {
+        // 额外检查版权和标签
+        if (!isLicenseWarningLine(plainText) && !containsBracketTag(plainText)) {
+          parsedLines.push(line);
+        }
+      }
+    }
+  }
+  
+  return parsedLines.join('\n');
+}
+
+// 从YRC内容中提取纯文本（移除时间标记）
+function extractPlainTextFromYrc(yrcContent) {
+  if (!yrcContent) return '';
+  
+  let plainText = '';
+  let currentPos = 0;
+  
+  while (currentPos < yrcContent.length) {
+    const parenIndex = yrcContent.indexOf('(', currentPos);
+    
+    if (parenIndex === -1) {
+      plainText += yrcContent.substring(currentPos);
+      break;
+    }
+    
+    plainText += yrcContent.substring(currentPos, parenIndex);
+    
+    const closeParenIndex = yrcContent.indexOf(')', parenIndex);
+    if (closeParenIndex === -1) {
+      break;
+    }
+    
+    currentPos = closeParenIndex + 1;
+  }
+  
+  return plainText.trim();
+}
+
 // 辅助函数 - 检查是否包含冒号（中英文冒号）
 function containsColon(text) {
   return text.includes(':') || text.includes('：');
@@ -1179,4 +1008,21 @@ function isLicenseWarningLine(text) {
     if (text.includes(token)) count += 1;
   }
   return count >= 3; // 降低阈值到3
+}
+
+// 辅助函数 - 从被删除的冒号行中提取制作人员信息
+function extractNamesFromRemovedColonLines(removedLines) {
+  const creditKeywords = ['lyrics', 'lyric', 'composed', 'compose', 'producer', 'produce', 'produced', '词', '曲', '制作人'];
+  const credits = [];
+  
+  for (const line of removedLines) {
+    for (const keyword of creditKeywords) {
+      if (line.toLowerCase().includes(keyword.toLowerCase())) {
+        credits.push(line);
+        break;
+      }
+    }
+  }
+  
+  return credits;
 }
