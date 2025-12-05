@@ -108,7 +108,7 @@ export default async function handler(req, res) {
   }
 }
 
-// ================ 核心解密函数 ================
+// ================ 修复的解密函数 ================
 
 // 检查文本是否包含可读内容
 function containsReadableContent(text) {
@@ -188,60 +188,65 @@ function extractEncryptedContent(xmlText) {
   return null;
 }
 
-// 解密QRC歌词（基于C#代码的实现）
-function decryptQrcLyrics(encryptedHex) {
+// 创建C#中func_ddes和func_des的模拟函数
+function decryptQQMusicLyrics(encryptedHex) {
   try {
     console.log('=== 开始解密QRC歌词 ===');
     console.log('加密数据长度:', encryptedHex.length);
     
     // 1. 十六进制字符串转Buffer
-    const encryptedBuffer = Buffer.from(encryptedHex, 'hex');
-    console.log('二进制长度:', encryptedBuffer.length, '字节');
+    let buffer = Buffer.from(encryptedHex, 'hex');
+    console.log('二进制长度:', buffer.length, '字节');
     
-    // 2. 准备24字节密钥（关键！与C#代码一致）
-    const QQKey = "!@#)(*$%123ZXC!@!@#)(NHL";
-    const keyBuffer = Buffer.from(QQKey, 'ascii');
+    // 2. 模拟三步解密过程
+    // 第一步：func_ddes(sbytes, "!@#)(NHLiuy*$%^&", sz)
+    buffer = tripleDesDecrypt(buffer, "!@#)(NHLiuy*$%^&");
+    console.log('第一步解密后前16字节:', buffer.slice(0, 16).toString('hex'));
     
-    console.log('24字节密钥:', keyBuffer.toString('hex'));
-    console.log('密钥ASCII:', QQKey);
+    // 第二步：func_des(sbytes, "123ZXC!@#)(*$%^&", sz)
+    buffer = tripleDesEncrypt(buffer, "123ZXC!@#)(*$%^&");
+    console.log('第二步加密后前16字节:', buffer.slice(0, 16).toString('hex'));
     
-    // 3. 使用3DES-ECB模式解密（无填充）
-    let decryptedBuffer;
+    // 第三步：func_ddes(sbytes, "!@#)(*$%^&abcDEF", sz)
+    buffer = tripleDesDecrypt(buffer, "!@#)(*$%^&abcDEF");
+    console.log('第三步解密后前16字节:', buffer.slice(0, 16).toString('hex'));
     
+    // 4. 解压缩数据
+    let decompressedText = '';
     try {
-      // 标准3DES解密（24字节密钥，ECB模式）
-      const decipher = crypto.createDecipheriv('des-ede3', keyBuffer, Buffer.alloc(0));
-      decipher.setAutoPadding(false);
-      decryptedBuffer = Buffer.concat([decipher.update(encryptedBuffer), decipher.final()]);
-      console.log('3DES解密成功，长度:', decryptedBuffer.length);
-      console.log('解密后前16字节(hex):', decryptedBuffer.slice(0, 16).toString('hex'));
-    } catch (desError) {
-      console.error('标准3DES解密失败:', desError.message);
-      return '';
-    }
-    
-    // 4. 检查解密结果并解压缩
-    let finalText = '';
-    
-    // 先尝试直接解码，看是否已经是文本
-    const directText = decryptedBuffer.toString('utf8', 'ignore');
-    if (containsReadableContent(directText)) {
-      console.log('解密后数据已经是可读文本');
-      finalText = directText;
-    } else {
-      // 尝试解压缩
       console.log('尝试解压缩...');
-      finalText = tryDecompress(decryptedBuffer);
+      const decompressedBuffer = zlib.inflateSync(buffer);
+      decompressedText = decompressedBuffer.toString('utf8');
+      console.log('解压缩成功，文本长度:', decompressedText.length);
+    } catch (decompressError) {
+      console.log('解压缩失败，尝试其他解压缩方式:', decompressError.message);
+      
+      // 尝试gunzip
+      try {
+        const decompressedBuffer = zlib.gunzipSync(buffer);
+        decompressedText = decompressedBuffer.toString('utf8');
+        console.log('gunzip解压缩成功，文本长度:', decompressedText.length);
+      } catch (gunzipError) {
+        console.log('gunzip失败，尝试直接解码:', gunzipError.message);
+        decompressedText = buffer.toString('utf8', 'ignore');
+      }
     }
     
-    // 5. 提取歌词内容
-    if (finalText) {
-      finalText = extractLyricContent(finalText);
-      console.log('最终解密结果长度:', finalText.length);
-      console.log('前200字符:', finalText.substring(0, Math.min(200, finalText.length)));
+    // 5. 处理XML格式
+    let finalLyrics = '';
+    if (decompressedText.includes('<?xml') || decompressedText.includes('<Lyric_1')) {
+      console.log('处理XML格式歌词');
+      finalLyrics = extractLyricFromXml(decompressedText);
+    } else {
+      finalLyrics = decompressedText;
     }
     
-    return finalText;
+    console.log('最终歌词长度:', finalLyrics.length);
+    if (finalLyrics.length > 0) {
+      console.log('歌词预览(前200字符):', finalLyrics.substring(0, Math.min(200, finalLyrics.length)));
+    }
+    
+    return finalLyrics;
     
   } catch (error) {
     console.error('解密失败:', error);
@@ -249,108 +254,78 @@ function decryptQrcLyrics(encryptedHex) {
   }
 }
 
-// 尝试解压缩数据
-function tryDecompress(buffer) {
-  // 尝试多种解压缩方法
-  const methods = [
-    { name: 'inflate', fn: (buf) => zlib.inflateSync(buf) },
-    { name: 'inflateRaw', fn: (buf) => zlib.inflateRawSync(buf) },
-    { name: 'gunzip', fn: (buf) => zlib.gunzipSync(buf) }
-  ];
-  
-  for (const method of methods) {
-    try {
-      console.log(`尝试 ${method.name} 解压缩...`);
-      const decompressed = method.fn(buffer);
-      
-      // 转换为文本并检查是否可读
-      const text = decompressed.toString('utf8', 'ignore');
-      if (containsReadableContent(text)) {
-        console.log(`${method.name} 解压缩成功，长度: ${text.length}`);
-        return text;
-      }
-    } catch (e) {
-      // 继续尝试下一种方法
-    }
+// 3DES解密函数
+function tripleDesDecrypt(buffer, keyStr) {
+  try {
+    // 将密钥填充或截断为24字节（192位）
+    let keyBuffer = Buffer.alloc(24, 0);
+    const keyBytes = Buffer.from(keyStr, 'ascii');
+    
+    // 将密钥复制到缓冲区
+    keyBytes.copy(keyBuffer, 0, 0, Math.min(keyBytes.length, 24));
+    
+    // 使用3DES-ECB解密
+    const decipher = crypto.createDecipheriv('des-ede3', keyBuffer, Buffer.alloc(0));
+    decipher.setAutoPadding(false);
+    
+    return Buffer.concat([decipher.update(buffer), decipher.final()]);
+  } catch (error) {
+    console.error('3DES解密失败:', error.message);
+    return buffer; // 如果失败，返回原始数据
   }
-  
-  console.log('所有解压缩方法都失败，尝试直接解码为文本');
-  
-  // 尝试不同编码直接解码
-  const encodings = ['utf8', 'utf16le', 'gbk', 'gb2312', 'latin1'];
-  for (const encoding of encodings) {
-    try {
-      const text = buffer.toString(encoding);
-      if (containsReadableContent(text)) {
-        console.log(`使用 ${encoding} 编码成功，长度: ${text.length}`);
-        return text;
-      }
-    } catch (e) {
-      // 忽略编码错误
-    }
-  }
-  
-  // 最后尝试UTF-8忽略无效字节
-  console.log('所有方法都失败，使用UTF-8忽略无效字节');
-  return buffer.toString('utf8', 'ignore');
 }
 
-// 提取歌词内容
-function extractLyricContent(text) {
-  if (!text) return '';
-  
-  // 尝试从XML中提取歌词内容
-  const patterns = [
-    /LyricContent="([^"]+)"/,
-    /<Lyric_1[^>]*>([\s\S]*?)<\/Lyric_1>/,
-    /<lyric[^>]*>([\s\S]*?)<\/lyric>/,
-    /<content[^>]*>([^<]+)<\/content>/,
-  ];
-  
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-    if (match && match[1]) {
-      const content = decodeHtmlEntities(match[1]);
-      if (content && content.trim().length > 0) {
-        console.log(`使用模式 ${pattern} 提取到歌词内容`);
-        return content;
-      }
-    }
+// 3DES加密函数
+function tripleDesEncrypt(buffer, keyStr) {
+  try {
+    // 将密钥填充或截断为24字节
+    let keyBuffer = Buffer.alloc(24, 0);
+    const keyBytes = Buffer.from(keyStr, 'ascii');
+    
+    // 将密钥复制到缓冲区
+    keyBytes.copy(keyBuffer, 0, 0, Math.min(keyBytes.length, 24));
+    
+    // 使用3DES-ECB加密
+    const cipher = crypto.createCipheriv('des-ede3', keyBuffer, Buffer.alloc(0));
+    cipher.setAutoPadding(false);
+    
+    return Buffer.concat([cipher.update(buffer), cipher.final()]);
+  } catch (error) {
+    console.error('3DES加密失败:', error.message);
+    return buffer; // 如果失败，返回原始数据
   }
-  
-  // 如果不是XML格式，直接返回原文本
-  return text;
 }
 
-// 处理解密后的文本
-function processDecryptedText(decryptedText) {
-  if (!decryptedText) return '';
-  
-  let processedText = decryptedText;
-  
-  // 如果是XML格式，提取歌词内容
-  if (decryptedText.includes('LyricContent="')) {
-    const match = decryptedText.match(/LyricContent="([^"]+)"/);
-    if (match && match[1]) {
-      processedText = decodeHtmlEntities(match[1]);
-      console.log('从XML中提取歌词内容');
+// 从XML中提取歌词
+function extractLyricFromXml(xmlText) {
+  try {
+    console.log('解析XML提取歌词');
+    
+    // 简单解析XML（对于简单结构足够）
+    const lyricMatch1 = xmlText.match(/LyricContent="([^"]+)"/);
+    if (lyricMatch1 && lyricMatch1[1]) {
+      console.log('从LyricContent属性提取歌词');
+      return decodeHtmlEntities(lyricMatch1[1]);
     }
-  }
-  
-  // 如果是XML格式但没有LyricContent属性，尝试其他方式
-  else if (decryptedText.includes('<?xml') || decryptedText.includes('<Lyric_1')) {
-    // 尝试匹配<Lyric_1>标签内容
-    const tagMatch = decryptedText.match(/<Lyric_1[^>]*>([\s\S]*?)<\/Lyric_1>/);
-    if (tagMatch && tagMatch[1]) {
-      processedText = decodeHtmlEntities(tagMatch[1]);
-      console.log('从<Lyric_1>标签提取歌词内容');
+    
+    const lyricMatch2 = xmlText.match(/<Lyric_1[^>]*>([\s\S]*?)<\/Lyric_1>/);
+    if (lyricMatch2 && lyricMatch2[1]) {
+      console.log('从Lyric_1标签提取歌词');
+      return decodeHtmlEntities(lyricMatch2[1]);
     }
+    
+    const lyricMatch3 = xmlText.match(/<lyric[^>]*>([\s\S]*?)<\/lyric>/);
+    if (lyricMatch3 && lyricMatch3[1]) {
+      console.log('从lyric标签提取歌词');
+      return decodeHtmlEntities(lyricMatch3[1]);
+    }
+    
+    console.log('未找到特定歌词标签，返回原始XML');
+    return xmlText;
+  } catch (error) {
+    console.error('XML解析失败:', error);
+    return xmlText;
   }
-  
-  // 清理文本
-  processedText = processedText.trim();
-  
-  return processedText;
 }
 
 // ================ 获取加密歌词 ================
@@ -404,7 +379,7 @@ async function getEncryptedLyrics(songId) {
     
     // 解密歌词
     try {
-      const decryptedText = decryptQrcLyrics(encryptedContent);
+      const decryptedText = decryptQQMusicLyrics(encryptedContent);
       
       if (!decryptedText || decryptedText.trim().length === 0) {
         console.log('解密文本为空');
@@ -413,11 +388,7 @@ async function getEncryptedLyrics(songId) {
       
       console.log('解密成功，解密文本长度:', decryptedText.length);
       
-      // 处理解密后的文本
-      const finalLyrics = processDecryptedText(decryptedText);
-      console.log('最终逐字歌词长度:', finalLyrics.length);
-      
-      return finalLyrics;
+      return decryptedText;
       
     } catch (decryptError) {
       console.error('解密失败:', decryptError.message);
@@ -737,7 +708,7 @@ function calculateSmartScore(song, targetTrack, artists, originalTrackName, orig
     titleScore = 90;
   } else if (isCloseMatch(songTitle, originalTrackNameLower)) {
     titleScore = 80;
-  } else if (isCloseMatch(songTitle, targetTrackLower)) {
+  } else if (isCloseMatch(songTitle, targetTrackLower) || songTitle.includes(targetTrackLower)) {
     titleScore = 70;
   } else if (songTitle.includes(originalTrackNameLower) && originalTrackNameLower.length > 3) {
     titleScore = 60;
