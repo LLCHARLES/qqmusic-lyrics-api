@@ -78,7 +78,7 @@ export default async function handler(req, res) {
     console.log('找到歌曲:', { name: getSongName(song), artist: extractArtists(song), id: song.id });
     
     // 获取歌词
-    // 注意：yrcLyrics 使用 id (数字)，普通歌词使用 mid (字符串)
+    // 注意：普通歌词用mid，QRC逐字歌词用id
     const [lyrics, yrcLyrics] = await Promise.all([
       getLyrics(song.mid || song.id),
       getEncryptedLyrics(song.id)
@@ -114,12 +114,15 @@ export default async function handler(req, res) {
 function decryptQQMusicLyrics(encryptedHex) {
   try {
     if (!encryptedHex) return '';
+
+    console.log('开始解密，长度:', encryptedHex.length);
     
     // 1. 十六进制字符串转Buffer
     let buffer = Buffer.from(encryptedHex, 'hex');
     
     // 2. 核心解密逻辑：模拟C#中的三次独立DES调用
-    // 注意：DES标准密钥长度为8字节，需截取字符串前8位
+    // 关键点：DES标准密钥长度为8字节，必须截取字符串前8位
+    // 关键点：必须使用 ECB 模式，且禁用自动填充 (setAutoPadding(false))
     
     // 第一步：func_ddes (解密) - Key: !@#)(NHLiuy*$%^& -> 前8字节: !@#)(NHL
     buffer = desEcbDecrypt(buffer, "!@#)(NHLiuy*$%^&");
@@ -138,12 +141,12 @@ function decryptQQMusicLyrics(encryptedHex) {
       decompressedText = decompressedBuffer.toString('utf8');
     } catch (error) {
       try {
+        console.log('inflate失败，尝试unzip:', error.message);
         // 备用：尝试unzip
         const decompressedBuffer = zlib.unzipSync(buffer);
         decompressedText = decompressedBuffer.toString('utf8');
       } catch (err2) {
-        // 解压失败，可能是数据本身损坏或解密步骤有误，但也可能是直接的文本
-        // 这种情况下通常意味着解密失败，但也尝试直接转码
+        console.log('解压完全失败，尝试直接转换');
         decompressedText = buffer.toString('utf8');
       }
     }
@@ -174,7 +177,7 @@ function desEcbDecrypt(buffer, keyStr) {
   const key = Buffer.from(keyStr.substring(0, 8));
   // 使用 des-ecb 模式，无 IV
   const decipher = crypto.createDecipheriv('des-ecb', key, null);
-  // 禁用自动填充，因为我们处理的是原始数据块
+  // 禁用自动填充，保留原始数据块结构
   decipher.setAutoPadding(false);
   return Buffer.concat([decipher.update(buffer), decipher.final()]);
 }
@@ -220,6 +223,7 @@ function extractEncryptedContent(xmlText) {
   // 方法3: 暴力查找长十六进制字符串
   const hexMatches = xmlText.match(/[0-9A-Fa-f]{200,}/g);
   if (hexMatches && hexMatches.length > 0) {
+    // 取最长的十六进制字符串
     return hexMatches.reduce((a, b) => a.length > b.length ? a : b);
   }
   
@@ -229,7 +233,7 @@ function extractEncryptedContent(xmlText) {
 // 从XML中提取歌词
 function extractLyricFromXml(xmlText) {
   try {
-    // 优先尝试 LyricContent 属性 (C#代码逻辑)
+    // 优先尝试 LyricContent 属性
     const lyricMatch1 = xmlText.match(/LyricContent="([^"]+)"/);
     if (lyricMatch1 && lyricMatch1[1]) {
       return decodeHtmlEntities(lyricMatch1[1]);
@@ -245,7 +249,6 @@ function extractLyricFromXml(xmlText) {
       return decodeHtmlEntities(lyricMatch3[1]);
     }
     
-    // 如果是纯文本但被包在XML里
     return xmlText;
   } catch (error) {
     return xmlText;
@@ -317,7 +320,6 @@ function checkSongMapping(processedTrackName, processedArtists, originalTrackNam
 async function handleMappedSong(mappedMid, originalTrackName, originalArtistName, res) {
   try {
     const lyrics = await getLyrics(mappedMid);
-    // 映射时，如果需要YRC，必须先获取 songId
     let songInfo = null;
     let yrcLyrics = '';
     
@@ -344,7 +346,9 @@ async function handleMappedSong(mappedMid, originalTrackName, originalArtistName
       syncedLyrics: lyrics.syncedLyrics,
       translatedLyrics: lyrics.translatedLyrics,
       yrcLyrics: yrcLyrics || '',
-      isMapped: true
+      isMapped: true,
+      originalTrackName: originalTrackName,
+      originalArtistName: originalArtistName
     };
     
     res.status(200).json(response);
@@ -450,7 +454,7 @@ async function searchSong(trackName, artists, originalTrackName, originalArtistN
         if (match) return match;
       }
     } catch (error) {
-      console.error('官方API搜索失败:', error.message);
+      console.error('官方API搜索失败:', error);
     }
   }
   
@@ -520,7 +524,7 @@ async function simplifiedSearch(trackName, artists, originalTrackName, originalA
       
       await new Promise(resolve => setTimeout(resolve, 200));
     } catch (error) {
-      // ignore
+      console.warn(`策略${i+1}失败:`, error.message);
     }
   }
   
@@ -668,7 +672,24 @@ function isCloseMatch(songTitle, targetTitle) {
   const cleanSong = songTitle.replace(/\(.*?\)| - .*|【.*?】/g, '').trim();
   const cleanTarget = targetTitle.replace(/\(.*?\)| - .*|【.*?】/g, '').trim();
   
-  return cleanSong === cleanTarget;
+  if (cleanSong === cleanTarget) {
+    return true;
+  }
+  
+  const hasJapaneseOrChinese = /[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]/.test(targetTitle);
+  if (hasJapaneseOrChinese) {
+    const corePart = extractCorePart(targetTitle);
+    if (songTitle.includes(corePart)) {
+      return true;
+    }
+  }
+  
+  return false;
+}
+
+function extractCorePart(text) {
+  const japaneseOrChineseMatch = text.match(/[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]+/);
+  return japaneseOrChineseMatch ? japaneseOrChineseMatch[0] : text.split(/\s+/)[0];
 }
 
 function getSongName(song) {
@@ -760,6 +781,7 @@ async function getLyrics(songMid) {
     if (lyricData.lyric) {
       const decodedLyric = Buffer.from(lyricData.lyric, 'base64').toString('utf-8');
       syncedLyrics = filterLyricsWithNewRules(decodedLyric);
+      plainLyrics = '';
     }
     
     if (lyricData.trans) {
@@ -770,7 +792,7 @@ async function getLyrics(songMid) {
     return { syncedLyrics, plainLyrics, translatedLyrics };
     
   } catch (error) {
-    console.error('获取普通歌词失败:', error.message);
+    console.error('获取歌词失败:', error);
     return { 
       syncedLyrics: '', 
       plainLyrics: '', 
@@ -778,6 +800,8 @@ async function getLyrics(songMid) {
     };
   }
 }
+
+// ================ 完整保留的过滤函数 ================
 
 function filterLyricsWithNewRules(lyricContent) {
   if (!lyricContent) return '';
@@ -803,16 +827,126 @@ function filterLyricsWithNewRules(lyricContent) {
   }
   
   let filtered = [...parsedLines];
+  let removedColonPlainTexts = [];
   
-  // 过滤逻辑：去除头部不必要的冒号行、括号行等
-  // ...保留原有的复杂过滤逻辑...
-  // 为了简洁，这里使用了基本的过滤，如需保留你原始的复杂逻辑，请将其粘贴回来
-  // 这里保留核心过滤逻辑
+  // 标题行处理
+  let i = 0;
+  let scanLimit = Math.min(3, filtered.length);
+  while (i < scanLimit) {
+    const text = filtered[i].plainText;
+    if (text.includes('-')) {
+      filtered.splice(i, 1);
+      scanLimit = Math.min(3, filtered.length);
+      continue;
+    } else {
+      i += 1;
+    }
+  }
+  
+  // 冒号行处理
+  let removedA2Colon = false;
+  i = 0;
+  scanLimit = Math.min(3, filtered.length);
+  while (i < scanLimit) {
+    const text = filtered[i].plainText;
+    if (containsColon(text)) {
+      removedColonPlainTexts.push(text);
+      filtered.splice(i, 1);
+      removedA2Colon = true;
+      scanLimit = Math.min(3, filtered.length);
+      continue;
+    } else {
+      i += 1;
+    }
+  }
+  
+  // 开头连续冒号行
+  let leading = 0;
+  while (leading < filtered.length) {
+    const text = filtered[leading].plainText;
+    if (containsColon(text)) {
+      leading += 1;
+    } else {
+      break;
+    }
+  }
+  
+  if (removedA2Colon) {
+    if (leading >= 1) {
+      for (let idx = 0; idx < leading; idx++) {
+        removedColonPlainTexts.push(filtered[idx].plainText);
+      }
+      filtered.splice(0, leading);
+    }
+  } else {
+    if (leading >= 2) {
+      for (let idx = 0; idx < leading; idx++) {
+        removedColonPlainTexts.push(filtered[idx].plainText);
+      }
+      filtered.splice(0, leading);
+    }
+  }
+  
+  let newFiltered = [];
+  i = 0;
+  while (i < filtered.length) {
+    const text = filtered[i].plainText;
+    if (containsColon(text)) {
+      let j = i;
+      while (j < filtered.length) {
+        const tj = filtered[j].plainText;
+        if (containsColon(tj)) {
+          j += 1;
+        } else {
+          break;
+        }
+      }
+      const runLen = j - i;
+      if (runLen >= 2) {
+        for (let k = i; k < j; k++) {
+          removedColonPlainTexts.push(filtered[k].plainText);
+        }
+        i = j;
+      } else {
+        newFiltered.push(filtered[i]);
+        i = j;
+      }
+    } else {
+      newFiltered.push(filtered[i]);
+      i += 1;
+    }
+  }
+  filtered = newFiltered;
+  
+  filtered = filtered.filter(line => !containsBracketTag(line.plainText));
+  
+  i = 0;
+  scanLimit = Math.min(2, filtered.length);
+  while (i < scanLimit) {
+    const text = filtered[i].plainText;
+    if (containsParenPair(text)) {
+      filtered.splice(i, 1);
+      scanLimit = Math.min(2, filtered.length);
+      continue;
+    } else {
+      i += 1;
+    }
+  }
+  
+  filtered = filtered.filter(line => !isLicenseWarningLine(line.plainText));
+  
   filtered = filtered.filter(line => {
     const text = line.plainText;
+    
     if (text === '') return false;
     if (text === '//') return false;
-    if (isLicenseWarningLine(text)) return false;
+    if (/^\/\/\s*$/.test(text) || /^\[\d+:\d+(\.\d+)?\]\s*\/\/\s*$/.test(line.raw)) {
+      return false;
+    }
+    if (/^\[\d+:\d+(\.\d+)?\]\s*$/.test(line.raw)) {
+      return false;
+    }
+    
     return true;
   });
   
@@ -820,12 +954,34 @@ function filterLyricsWithNewRules(lyricContent) {
   return result;
 }
 
+function containsColon(text) {
+  return text.includes(':') || text.includes('：');
+}
+
+function containsBracketTag(text) {
+  const hasHalfPair = text.includes('[') && text.includes(']');
+  const hasFullPair = text.includes('【') && text.includes('】');
+  return hasHalfPair || hasFullPair;
+}
+
+function containsParenPair(text) {
+  const hasHalfPair = text.includes('(') && text.includes(')');
+  const hasFullPair = text.includes('（') && text.includes('）');
+  return hasHalfPair || hasFullPair;
+}
+
 function isLicenseWarningLine(text) {
   if (!text) return false;
-  const tokens = ['未经', '许可', '授权', '不得', '请勿', '使用', '版权', '翻唱', 'QQ音乐', '享有本翻译'];
+  
+  const specialKeywords = ['文曲大模型', '享有本翻译作品的著作权'];
+  for (const keyword of specialKeywords) {
+    if (text.includes(keyword)) return true;
+  }
+  
+  const tokens = ['未经', '许可', '授权', '不得', '请勿', '使用', '版权', '翻唱'];
   let count = 0;
   for (const token of tokens) {
     if (text.includes(token)) count += 1;
   }
-  return count >= 2 || text.includes('文曲大模型');
+  return count >= 3;
 }
