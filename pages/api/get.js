@@ -106,6 +106,58 @@ export default async function handler(req, res) {
   }
 }
 
+// ================ 辅助函数 ================
+
+// 十六进制字符串转字节数组
+function hexStringToByteArray(hexString) {
+  if (!hexString || hexString.length === 0) {
+    return new Uint8Array(0);
+  }
+  
+  // 确保字符串长度为偶数
+  if (hexString.length % 2 !== 0) {
+    hexString = '0' + hexString;
+  }
+  
+  const byteArray = new Uint8Array(hexString.length / 2);
+  
+  for (let i = 0; i < hexString.length; i += 2) {
+    const byte = parseInt(hexString.substr(i, 2), 16);
+    if (isNaN(byte)) {
+      throw new Error(`Invalid hex string at position ${i}: ${hexString.substr(i, 2)}`);
+    }
+    byteArray[i / 2] = byte;
+  }
+  
+  return byteArray;
+}
+
+// 检查文本是否包含可读内容
+function containsReadableContent(text) {
+  if (!text || text.length === 0) return false;
+  
+  // 计算可打印字符的比例
+  let printableCount = 0;
+  const sampleSize = Math.min(text.length, 1000);
+  for (let i = 0; i < sampleSize; i++) {
+    const charCode = text.charCodeAt(i);
+    // 可打印ASCII字符 (32-126) 或常见Unicode字符
+    if ((charCode >= 32 && charCode <= 126) || 
+        (charCode >= 0x4E00 && charCode <= 0x9FFF) || // 中文
+        (charCode >= 0x3040 && charCode <= 0x309F) || // 日文平假名
+        (charCode >= 0x30A0 && charCode <= 0x30FF) || // 日文片假名
+        charCode === 10 || charCode === 13 || // 换行符
+        charCode === 9) { // 制表符
+      printableCount++;
+    }
+  }
+  
+  const ratio = printableCount / sampleSize;
+  console.log('可打印字符比例:', ratio);
+  
+  return ratio > 0.3; // 至少30%的可打印字符
+}
+
 // ================ 逐字歌词相关函数 ================
 
 // 获取加密歌词
@@ -223,7 +275,6 @@ async function getEncryptedLyrics(songId) {
 }
 
 // 解密QRC歌词
-// 修改decryptQrcLyrics函数
 function decryptQrcLyrics(encryptedLyrics) {
   try {
     console.log('=== 开始解密QRC歌词 ===');
@@ -251,30 +302,29 @@ function decryptQrcLyrics(encryptedLyrics) {
     const decipher = crypto.createDecipheriv('des-ede3', keyBuffer, Buffer.alloc(0));
     
     // 尝试不同的填充方式
-    decipher.setAutoPadding(false); // 先尝试无填充
-    
-    // 解密
     let decrypted;
     try {
+      // 先尝试自动填充（通常是PKCS7）
+      decipher.setAutoPadding(true);
       decrypted = Buffer.concat([
         decipher.update(Buffer.from(encryptedBytes)),
         decipher.final()
       ]);
-      console.log('无填充模式解密成功');
+      console.log('自动填充模式解密成功');
     } catch (error1) {
-      console.log('无填充模式失败，尝试PKCS7填充:', error1.message);
-      // 尝试使用PKCS7填充
+      console.log('自动填充模式失败，尝试无填充:', error1.message);
+      // 尝试无填充模式
       const decipher2 = crypto.createDecipheriv('des-ede3', keyBuffer, Buffer.alloc(0));
-      decipher2.setAutoPadding(true);
+      decipher2.setAutoPadding(false);
       decrypted = Buffer.concat([
         decipher2.update(Buffer.from(encryptedBytes)),
         decipher2.final()
       ]);
-      console.log('PKCS7填充模式解密成功');
+      console.log('无填充模式解密成功');
     }
     
     console.log('解密后字节长度:', decrypted.length);
-    console.log('解密后数据前32字节(hex):', Buffer.from(decrypted).slice(0, 32).toString('hex'));
+    console.log('解密后数据前32字节(hex):', decrypted.slice(0, 32).toString('hex'));
     
     // 尝试检测数据格式
     // 检查是否是zlib压缩数据（前两个字节是0x78 0x9C或0x78 0xDA）
@@ -292,11 +342,16 @@ function decryptQrcLyrics(encryptedLyrics) {
       const zlib = require('zlib');
       try {
         decompressed = zlib.inflateSync(decrypted);
-        console.log('zlib解压缩成功，长度:', decompressed.length);
-      } catch (zlibError) {
-        console.error('zlib解压缩失败:', zlibError.message);
-        // 如果不是zlib压缩，尝试作为原始文本处理
-        decompressed = decrypted;
+        console.log('zlib inflate解压缩成功，长度:', decompressed.length);
+      } catch (zlibError1) {
+        console.error('zlib inflate失败，尝试inflateRaw:', zlibError1.message);
+        try {
+          decompressed = zlib.inflateRawSync(decrypted);
+          console.log('zlib inflateRaw解压缩成功，长度:', decompressed.length);
+        } catch (zlibError2) {
+          console.error('zlib inflateRaw也失败，直接使用原始数据:', zlibError2.message);
+          decompressed = decrypted;
+        }
       }
     } else {
       console.log('数据不是zlib压缩格式，直接处理为原始数据');
@@ -305,7 +360,7 @@ function decryptQrcLyrics(encryptedLyrics) {
     
     // 尝试不同的编码方式
     let result = '';
-    const encodingsToTry = ['utf8', 'utf16le', 'latin1', 'ascii'];
+    const encodingsToTry = ['utf8', 'utf16le', 'latin1', 'ascii', 'gbk', 'gb2312'];
     
     for (const encoding of encodingsToTry) {
       try {
@@ -329,6 +384,12 @@ function decryptQrcLyrics(encryptedLyrics) {
       console.log('使用UTF-8忽略无效字节后长度:', result.length);
     }
     
+    // 移除BOM（如果有）
+    if (result.charCodeAt(0) === 0xFEFF) {
+      result = result.slice(1);
+      console.log('移除了UTF-8 BOM');
+    }
+    
     console.log('最终解密结果长度:', result.length);
     return result;
     
@@ -336,60 +397,6 @@ function decryptQrcLyrics(encryptedLyrics) {
     console.error('解密过程失败:', error.message);
     console.error(error.stack);
     return '';
-  }
-}
-
-// 检查文本是否包含可读内容
-function containsReadableContent(text) {
-  if (!text || text.length === 0) return false;
-  
-  // 计算可打印字符的比例
-  let printableCount = 0;
-  for (let i = 0; i < Math.min(text.length, 1000); i++) {
-    const charCode = text.charCodeAt(i);
-    // 可打印ASCII字符 (32-126) 或常见Unicode字符
-    if ((charCode >= 32 && charCode <= 126) || 
-        (charCode >= 0x4E00 && charCode <= 0x9FFF) || // 中文
-        (charCode >= 0x3040 && charCode <= 0x309F) || // 日文平假名
-        (charCode >= 0x30A0 && charCode <= 0x30FF) || // 日文片假名
-        charCode === 10 || charCode === 13 || // 换行符
-        charCode === 9) { // 制表符
-      printableCount++;
-    }
-  }
-  
-  const ratio = printableCount / Math.min(text.length, 1000);
-  console.log('可打印字符比例:', ratio);
-  
-  return ratio > 0.3; // 至少30%的可打印字符
-}
-
-// 修改zlibInflate函数
-function zlibInflate(compressedBytes) {
-  try {
-    const zlib = require('zlib');
-    
-    // 先尝试inflate（有zlib头）
-    try {
-      const decompressed = zlib.inflateSync(Buffer.from(compressedBytes));
-      console.log('使用inflate解压缩成功');
-      return new Uint8Array(decompressed);
-    } catch (error1) {
-      console.warn('inflate失败，尝试inflateRaw:', error1.message);
-      
-      // 尝试inflateRaw（无zlib头）
-      try {
-        const decompressed = zlib.inflateRawSync(Buffer.from(compressedBytes));
-        console.log('使用inflateRaw解压缩成功');
-        return new Uint8Array(decompressed);
-      } catch (error2) {
-        console.warn('inflateRaw也失败，返回原始数据:', error2.message);
-        return compressedBytes;
-      }
-    }
-  } catch (error) {
-    console.error('解压缩失败:', error.message);
-    return compressedBytes;
   }
 }
 
@@ -435,7 +442,7 @@ function decodeHtmlEntities(text) {
   return text.replace(/&amp;|&lt;|&gt;|&quot;|&#39;|&nbsp;/g, match => entities[match]);
 }
 
-// ================ 原有辅助函数（保持不变） ================
+// ================ 原有辅助函数 ================
 
 function checkSongMapping(processedTrackName, processedArtists, originalTrackName, originalArtistName) {
   const possibleKeys = [
