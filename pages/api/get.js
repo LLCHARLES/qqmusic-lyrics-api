@@ -1,6 +1,6 @@
 import axios from 'axios';
-import crypto from 'crypto';
 import zlib from 'zlib';
+import CryptoJS from 'crypto-js';
 
 // 歌曲映射表
 const songMapping = {
@@ -108,34 +108,64 @@ export default async function handler(req, res) {
   }
 }
 
-// ================ 修复的解密函数 ================
+// ================ 使用 crypto-js 的 DES 解密函数 ================
 
-// 单DES解密函数 (关键修复：使用des-ecb而不是des-ede3)
+// 将十六进制字符串转换为 CryptoJS WordArray
+function hexToWordArray(hexStr) {
+  return CryptoJS.enc.Hex.parse(hexStr);
+}
+
+// 将 Buffer 转换为 CryptoJS WordArray
+function bufferToWordArray(buffer) {
+  const hexStr = buffer.toString('hex');
+  return CryptoJS.enc.Hex.parse(hexStr);
+}
+
+// 将 CryptoJS WordArray 转换为 Buffer
+function wordArrayToBuffer(wordArray) {
+  const hexStr = CryptoJS.enc.Hex.stringify(wordArray);
+  return Buffer.from(hexStr, 'hex');
+}
+
+// 单DES解密函数 (使用 crypto-js)
 function desDecrypt(buffer, keyStr) {
   try {
-    // 关键：使用密钥字符串的前8个字节
-    const keyBuffer = Buffer.from(keyStr.slice(0, 8), 'utf8');
+    // 使用密钥字符串的前8个字节
+    const key = CryptoJS.enc.Utf8.parse(keyStr.slice(0, 8));
+    const data = bufferToWordArray(buffer);
     
-    const decipher = crypto.createDecipheriv('des-ecb', keyBuffer, '');
-    decipher.setAutoPadding(false);
+    // 创建密文对象
+    const cipherParams = CryptoJS.lib.CipherParams.create({
+      ciphertext: data
+    });
     
-    return Buffer.concat([decipher.update(buffer), decipher.final()]);
+    // DES-ECB 解密，无填充
+    const decrypted = CryptoJS.DES.decrypt(cipherParams, key, {
+      mode: CryptoJS.mode.ECB,
+      padding: CryptoJS.pad.NoPadding
+    });
+    
+    return wordArrayToBuffer(decrypted);
   } catch (error) {
     console.error('DES解密失败:', error.message);
     return buffer;
   }
 }
 
-// 单DES加密函数
+// 单DES加密函数 (使用 crypto-js)
 function desEncrypt(buffer, keyStr) {
   try {
-    // 关键：使用密钥字符串的前8个字节
-    const keyBuffer = Buffer.from(keyStr.slice(0, 8), 'utf8');
+    // 使用密钥字符串的前8个字节
+    const key = CryptoJS.enc.Utf8.parse(keyStr.slice(0, 8));
+    const data = bufferToWordArray(buffer);
     
-    const cipher = crypto.createCipheriv('des-ecb', keyBuffer, '');
-    cipher.setAutoPadding(false);
+    // DES-ECB 加密，无填充
+    const encrypted = CryptoJS.DES.encrypt(data, key, {
+      mode: CryptoJS.mode.ECB,
+      padding: CryptoJS.pad.NoPadding
+    });
     
-    return Buffer.concat([cipher.update(buffer), cipher.final()]);
+    return wordArrayToBuffer(encrypted.ciphertext);
   } catch (error) {
     console.error('DES加密失败:', error.message);
     return buffer;
@@ -153,7 +183,7 @@ function decryptQQMusicLyrics(encryptedHex) {
     console.log('二进制长度:', buffer.length, '字节');
     console.log('原始数据前16字节:', buffer.slice(0, 16).toString('hex'));
     
-    // 2. 三步解密过程 - 使用单DES (不是3DES!)
+    // 2. 三步解密过程 - 使用单DES
     // 密钥实际使用的是字符串的前8个字符
     
     // 第一步：DES解密，密钥 "!@#)(NHL"
@@ -217,34 +247,6 @@ function decryptQQMusicLyrics(encryptedHex) {
     console.error('解密失败:', error);
     return '';
   }
-}
-
-// 检查文本是否包含可读内容
-function containsReadableContent(text) {
-  if (!text || text.length < 10) return false;
-  
-  let readable = 0;
-  const sampleSize = Math.min(text.length, 1000);
-  
-  for (let i = 0; i < sampleSize; i++) {
-    const code = text.charCodeAt(i);
-    
-    // 中文字符
-    if (code >= 0x4E00 && code <= 0x9FFF) {
-      readable++;
-    }
-    // 可打印ASCII字符
-    else if (code >= 32 && code <= 126) {
-      readable++;
-    }
-    // 常见标点和控制字符
-    else if (code === 10 || code === 13 || code === 9) {
-      readable++;
-    }
-  }
-  
-  const ratio = readable / sampleSize;
-  return ratio > 0.3;
 }
 
 // 解码HTML实体
