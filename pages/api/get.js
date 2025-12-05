@@ -132,32 +132,6 @@ function hexStringToByteArray(hexString) {
   return byteArray;
 }
 
-// 检查文本是否包含可读内容
-function containsReadableContent(text) {
-  if (!text || text.length === 0) return false;
-  
-  // 计算可打印字符的比例
-  let printableCount = 0;
-  const sampleSize = Math.min(text.length, 1000);
-  for (let i = 0; i < sampleSize; i++) {
-    const charCode = text.charCodeAt(i);
-    // 可打印ASCII字符 (32-126) 或常见Unicode字符
-    if ((charCode >= 32 && charCode <= 126) || 
-        (charCode >= 0x4E00 && charCode <= 0x9FFF) || // 中文
-        (charCode >= 0x3040 && charCode <= 0x309F) || // 日文平假名
-        (charCode >= 0x30A0 && charCode <= 0x30FF) || // 日文片假名
-        charCode === 10 || charCode === 13 || // 换行符
-        charCode === 9) { // 制表符
-      printableCount++;
-    }
-  }
-  
-  const ratio = printableCount / sampleSize;
-  console.log('可打印字符比例:', ratio);
-  
-  return ratio > 0.3; // 至少30%的可打印字符
-}
-
 // ================ 逐字歌词相关函数 ================
 
 // 获取加密歌词
@@ -293,70 +267,82 @@ function decryptQrcLyrics(encryptedLyrics) {
     // 使用Node.js的crypto模块进行3DES解密
     const crypto = require('crypto');
     const key = '!@#)(*$%123ZXC!@!@#)(NHL';
+    
+    // 将密钥分成3个8字节部分
     const keyBuffer = Buffer.from(key, 'ascii');
+    const key1 = keyBuffer.slice(0, 8);  // 第1个8字节
+    const key2 = keyBuffer.slice(8, 16); // 第2个8字节
+    const key3 = keyBuffer.slice(16, 24); // 第3个8字节
     
-    console.log('密钥Buffer:', keyBuffer.toString('hex'));
-    console.log('密钥长度:', keyBuffer.length);
+    console.log('密钥拆分:');
+    console.log('Key1:', key1.toString('hex'));
+    console.log('Key2:', key2.toString('hex'));
+    console.log('Key3:', key3.toString('hex'));
     
-    // 使用DES-EDE3-ECB模式解密，这是三重DES
-    const decipher = crypto.createDecipheriv('des-ede3', keyBuffer, Buffer.alloc(0));
-    
-    // 尝试不同的填充方式
     let decrypted;
+    
+    // 根据C#代码，解密时使用：key3解密 -> key2加密 -> key1解密
+    // 但这是三重DES的解密标准模式，des-ede3应该已经处理了
+    
+    // 先尝试标准的des-ede3解密
     try {
-      // 先尝试自动填充（通常是PKCS7）
-      decipher.setAutoPadding(true);
-      decrypted = Buffer.concat([
-        decipher.update(Buffer.from(encryptedBytes)),
-        decipher.final()
-      ]);
-      console.log('自动填充模式解密成功');
+      const decipher = crypto.createDecipheriv('des-ede3', keyBuffer, Buffer.alloc(0));
+      decipher.setAutoPadding(false);
+      decrypted = Buffer.concat([decipher.update(encryptedBytes), decipher.final()]);
+      console.log('标准des-ede3解密成功');
     } catch (error1) {
-      console.log('自动填充模式失败，尝试无填充:', error1.message);
-      // 尝试无填充模式
-      const decipher2 = crypto.createDecipheriv('des-ede3', keyBuffer, Buffer.alloc(0));
+      console.log('标准des-ede3失败，尝试手动三重DES:', error1.message);
+      
+      // 手动实现：解密(key3) -> 加密(key2) -> 解密(key1)
+      // 第一轮: 用key3解密
+      const decipher1 = crypto.createDecipheriv('des-ecb', key3, Buffer.alloc(0));
+      decipher1.setAutoPadding(false);
+      const step1 = Buffer.concat([decipher1.update(encryptedBytes), decipher1.final()]);
+      
+      // 第二轮: 用key2加密
+      const cipher = crypto.createCipheriv('des-ecb', key2, Buffer.alloc(0));
+      cipher.setAutoPadding(false);
+      const step2 = Buffer.concat([cipher.update(step1), cipher.final()]);
+      
+      // 第三轮: 用key1解密
+      const decipher2 = crypto.createDecipheriv('des-ecb', key1, Buffer.alloc(0));
       decipher2.setAutoPadding(false);
-      decrypted = Buffer.concat([
-        decipher2.update(Buffer.from(encryptedBytes)),
-        decipher2.final()
-      ]);
-      console.log('无填充模式解密成功');
+      decrypted = Buffer.concat([decipher2.update(step2), decipher2.final()]);
+      console.log('手动三重DES解密成功');
     }
     
     console.log('解密后字节长度:', decrypted.length);
     console.log('解密后数据前32字节(hex):', decrypted.slice(0, 32).toString('hex'));
     
-    // 尝试检测数据格式
-    // 检查是否是zlib压缩数据（前两个字节是0x78 0x9C或0x78 0xDA）
-    const firstTwoBytes = decrypted.slice(0, 2);
-    const isZlibCompressed = (firstTwoBytes[0] === 0x78 && 
-                            (firstTwoBytes[1] === 0x9C || 
-                             firstTwoBytes[1] === 0xDA || 
-                             firstTwoBytes[1] === 0x01));
-    
-    console.log('前两个字节:', firstTwoBytes.toString('hex'), '是否zlib压缩:', isZlibCompressed);
-    
-    let decompressed;
-    if (isZlibCompressed) {
-      // 尝试解压缩
+    // 尝试解压缩
+    let decompressed = decrypted;
+    try {
       const zlib = require('zlib');
-      try {
-        decompressed = zlib.inflateSync(decrypted);
-        console.log('zlib inflate解压缩成功，长度:', decompressed.length);
-      } catch (zlibError1) {
-        console.error('zlib inflate失败，尝试inflateRaw:', zlibError1.message);
+      
+      // 首先检查是否是zlib压缩数据
+      const isZlib = (decrypted[0] === 0x78 && 
+                     (decrypted[1] === 0x01 || 
+                      decrypted[1] === 0x9C || 
+                      decrypted[1] === 0xDA));
+      
+      if (isZlib) {
+        console.log('检测到zlib压缩数据，尝试解压缩');
         try {
+          decompressed = zlib.inflateSync(decrypted);
+          console.log('zlib解压缩成功');
+        } catch (zlibError) {
+          console.log('zlib解压缩失败，尝试inflateRaw:', zlibError.message);
           decompressed = zlib.inflateRawSync(decrypted);
-          console.log('zlib inflateRaw解压缩成功，长度:', decompressed.length);
-        } catch (zlibError2) {
-          console.error('zlib inflateRaw也失败，直接使用原始数据:', zlibError2.message);
-          decompressed = decrypted;
+          console.log('inflateRaw解压缩成功');
         }
+      } else {
+        console.log('数据不是zlib压缩格式，直接使用原始数据');
       }
-    } else {
-      console.log('数据不是zlib压缩格式，直接处理为原始数据');
-      decompressed = decrypted;
+    } catch (error) {
+      console.log('解压缩失败，使用原始数据:', error.message);
     }
+    
+    console.log('解压缩后长度:', decompressed.length);
     
     // 尝试不同的编码方式
     let result = '';
@@ -366,9 +352,8 @@ function decryptQrcLyrics(encryptedLyrics) {
       try {
         const text = decompressed.toString(encoding);
         // 检查是否包含可读内容
-        if (text && text.length > 0 && containsReadableContent(text)) {
+        if (isReadableText(text)) {
           console.log(`使用${encoding}编码成功，长度:`, text.length);
-          console.log(`前200字符:`, text.substring(0, Math.min(200, text.length)));
           result = text;
           break;
         }
@@ -378,16 +363,14 @@ function decryptQrcLyrics(encryptedLyrics) {
     }
     
     if (!result) {
-      console.log('所有编码尝试都失败');
-      // 作为最后的手段，尝试UTF-8并忽略无效字节
+      console.log('所有编码尝试都失败，使用UTF-8忽略无效字节');
       result = decompressed.toString('utf8', 'ignore');
-      console.log('使用UTF-8忽略无效字节后长度:', result.length);
     }
     
     // 移除BOM（如果有）
-    if (result.charCodeAt(0) === 0xFEFF) {
+    if (result.charCodeAt(0) === 0xFEFF || result.charCodeAt(0) === 0xFFFE) {
       result = result.slice(1);
-      console.log('移除了UTF-8 BOM');
+      console.log('移除了BOM');
     }
     
     console.log('最终解密结果长度:', result.length);
@@ -398,6 +381,29 @@ function decryptQrcLyrics(encryptedLyrics) {
     console.error(error.stack);
     return '';
   }
+}
+
+// 检查文本是否可读
+function isReadableText(text) {
+  if (!text || text.length < 10) return false;
+  
+  // 计算可打印字符的比例
+  let printable = 0;
+  let sampleSize = Math.min(text.length, 1000);
+  
+  for (let i = 0; i < sampleSize; i++) {
+    const code = text.charCodeAt(i);
+    // 可打印ASCII字符或中文字符
+    if ((code >= 32 && code <= 126) || 
+        (code >= 0x4E00 && code <= 0x9FFF) ||
+        code === 10 || code === 13 || code === 9) {
+      printable++;
+    }
+  }
+  
+  const ratio = printable / sampleSize;
+  console.log(`可读性检查: ${printable}/${sampleSize}=${ratio.toFixed(3)}`);
+  return ratio > 0.5; // 至少50%可打印字符
 }
 
 // 从XML提取歌词内容
@@ -442,7 +448,7 @@ function decodeHtmlEntities(text) {
   return text.replace(/&amp;|&lt;|&gt;|&quot;|&#39;|&nbsp;/g, match => entities[match]);
 }
 
-// ================ 原有辅助函数 ================
+// ================ 原有辅助函数（保持不变） ================
 
 function checkSongMapping(processedTrackName, processedArtists, originalTrackName, originalArtistName) {
   const possibleKeys = [
