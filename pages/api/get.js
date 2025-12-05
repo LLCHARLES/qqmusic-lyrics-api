@@ -108,7 +108,7 @@ export default async function handler(req, res) {
   }
 }
 
-// ================ 新增的辅助函数 ================
+// ================ 核心解密函数 ================
 
 // 检查文本是否包含可读内容
 function containsReadableContent(text) {
@@ -152,8 +152,6 @@ function decodeHtmlEntities(text) {
   return text.replace(/&amp;|&lt;|&gt;|&quot;|&#39;|&nbsp;/g, match => entities[match]);
 }
 
-// ================ 改进的加密内容提取函数 ================
-
 // 改进的加密内容提取函数
 function extractEncryptedContent(xmlText) {
   // 尝试多种方式提取加密内容
@@ -190,257 +188,112 @@ function extractEncryptedContent(xmlText) {
   return null;
 }
 
-// ================ 逐字歌词解密相关函数 ================
-
-// 获取加密歌词
-async function getEncryptedLyrics(songId) {
-  try {
-    console.log(`=== 开始获取逐字歌词，歌曲ID: ${songId} ===`);
-    
-    const params = new URLSearchParams({
-      version: '15',
-      miniversion: '82',
-      lrctype: '4',
-      musicid: songId
-    });
-    
-    console.log('请求URL: https://c.y.qq.com/qqmusic/fcgi-bin/lyric_download.fcg');
-    console.log('请求参数:', params.toString());
-    
-    const response = await axios.get(`https://c.y.qq.com/qqmusic/fcgi-bin/lyric_download.fcg?${params}`, {
-      headers: {
-        'Referer': 'https://c.y.qq.com/'
-      },
-      timeout: 10000
-    });
-    
-    let data = response.data;
-    console.log('API响应长度:', data.length);
-    
-    // 检查响应是否包含预期内容
-    if (!data || data.length < 100) {
-      console.log('响应内容过短，可能无效');
-      return '';
-    }
-    
-    console.log('API响应前500字符:', data.substring(0, 500));
-    
-    // 移除XML注释
-    data = data.replace(/<!--|-->/g, '');
-    console.log('移除注释后长度:', data.length);
-    
-    // 提取加密内容
-    const encryptedContent = extractEncryptedContent(data);
-    
-    if (!encryptedContent) {
-      console.log('未找到加密内容');
-      return '';
-    }
-    
-    console.log('加密内容长度:', encryptedContent.length);
-    console.log('加密内容前100字符:', encryptedContent.substring(0, 100));
-    
-    // 解密歌词
-    try {
-      const decryptedText = decryptQrcLyrics(encryptedContent);
-      console.log('解密成功，解密文本长度:', decryptedText.length);
-      
-      if (!decryptedText || decryptedText.trim().length === 0) {
-        console.log('解密文本为空');
-        return '';
-      }
-      
-      // 处理解密后的文本
-      const finalLyrics = processDecryptedText(decryptedText);
-      console.log('最终逐字歌词长度:', finalLyrics.length);
-      
-      return finalLyrics;
-      
-    } catch (decryptError) {
-      console.error('解密失败:', decryptError.message);
-      return '';
-    }
-    
-  } catch (error) {
-    console.error('获取逐字歌词失败:', error.message);
-    return '';
-  }
-}
-
 // 解密QRC歌词（基于C#代码的实现）
-// ================ 调试版本解密函数 ================
-
-function debugDecryptQrcLyrics(encryptedHex) {
+function decryptQrcLyrics(encryptedHex) {
   try {
-    console.log('=== 调试解密开始 ===');
+    console.log('=== 开始解密QRC歌词 ===');
+    console.log('加密数据长度:', encryptedHex.length);
     
-    // 1. 转换十六进制为Buffer
+    // 1. 十六进制字符串转Buffer
     const encryptedBuffer = Buffer.from(encryptedHex, 'hex');
-    console.log('加密数据长度:', encryptedBuffer.length);
-    console.log('前32字节(hex):', encryptedBuffer.slice(0, 32).toString('hex'));
+    console.log('二进制长度:', encryptedBuffer.length, '字节');
     
-    // 2. 尝试不同的密钥组合
-    const keyVariants = generateKeyVariants();
+    // 2. 准备24字节密钥（关键！与C#代码一致）
+    const QQKey = "!@#)(*$%123ZXC!@!@#)(NHL";
+    const keyBuffer = Buffer.from(QQKey, 'ascii');
     
-    for (let i = 0; i < keyVariants.length; i++) {
-      const variant = keyVariants[i];
-      console.log(`\n=== 尝试密钥组合 ${i+1}: ${variant.name} ===`);
-      console.log('密钥(hex):', variant.key.toString('hex'));
-      
-      try {
-        // 尝试3DES解密
-        const decipher = crypto.createDecipheriv('des-ede3', variant.key, Buffer.alloc(0));
-        decipher.setAutoPadding(false);
-        const decrypted = Buffer.concat([decipher.update(encryptedBuffer), decipher.final()]);
-        
-        console.log('解密成功，长度:', decrypted.length);
-        console.log('解密后前32字节(hex):', decrypted.slice(0, 32).toString('hex'));
-        console.log('解密后前64字节(ascii):', decrypted.slice(0, 64).toString('ascii'));
-        
-        // 检查是否是压缩数据
-        analyzeDecryptedData(decrypted, variant.name);
-        
-      } catch (e) {
-        console.log('解密失败:', e.message);
-      }
-    }
+    console.log('24字节密钥:', keyBuffer.toString('hex'));
+    console.log('密钥ASCII:', QQKey);
     
-    return '';
-    
-  } catch (error) {
-    console.error('调试解密失败:', error);
-    return '';
-  }
-}
-
-function generateKeyVariants() {
-  const key1Full = "!@#)(NHLiuy*$%^&";
-  const key2Full = "123ZXC!@#)(*$%^&";
-  const key3Full = "!@#)(*$%^&abcDEF";
-  
-  const variants = [];
-  
-  // 变体1: C#代码中的24字节密钥（key3前8 + key2前8 + key1前8）
-  variants.push({
-    name: 'C#标准密钥 (key3+key2+key1)',
-    key: Buffer.concat([
-      Buffer.from(key3Full, 'ascii').slice(0, 8),
-      Buffer.from(key2Full, 'ascii').slice(0, 8),
-      Buffer.from(key1Full, 'ascii').slice(0, 8)
-    ])
-  });
-  
-  // 变体2: 反向顺序 (key1前8 + key2前8 + key3前8)
-  variants.push({
-    name: '反向顺序 (key1+key2+key3)',
-    key: Buffer.concat([
-      Buffer.from(key1Full, 'ascii').slice(0, 8),
-      Buffer.from(key2Full, 'ascii').slice(0, 8),
-      Buffer.from(key3Full, 'ascii').slice(0, 8)
-    ])
-  });
-  
-  // 变体3: 单个DES解密（只用key1）
-  variants.push({
-    name: '单个DES (key1)',
-    key: Buffer.from(key1Full, 'ascii').slice(0, 8)
-  });
-  
-  // 变体4: 手动三重DES
-  variants.push({
-    name: '手动三重DES',
-    key: Buffer.concat([
-      Buffer.from(key1Full, 'ascii').slice(0, 8),
-      Buffer.from(key2Full, 'ascii').slice(0, 8),
-      Buffer.from(key3Full, 'ascii').slice(0, 8)
-    ])
-  });
-  
-  return variants;
-}
-
-function analyzeDecryptedData(data, variantName) {
-  console.log(`\n分析 ${variantName} 的解密数据:`);
-  
-  // 检查是否是常见的文件格式
-  const firstBytes = data.slice(0, 4);
-  console.log('前4字节(hex):', firstBytes.toString('hex'));
-  
-  // 检查是否是PNG
-  if (firstBytes.toString('hex') === '89504e47') {
-    console.log('可能是PNG图片');
-  }
-  
-  // 检查是否是JPEG
-  if (firstBytes.toString('hex') === 'ffd8ffe0' || firstBytes.toString('hex').startsWith('ffd8ff')) {
-    console.log('可能是JPEG图片');
-  }
-  
-  // 检查是否是GIF
-  if (firstBytes.toString('ascii') === 'GIF8') {
-    console.log('可能是GIF图片');
-  }
-  
-  // 检查是否是压缩数据
-  const byte1 = data[0];
-  const byte2 = data[1];
-  
-  // zlib头检查
-  if (byte1 === 0x78 && (byte2 === 0x01 || byte2 === 0x9C || byte2 === 0xDA)) {
-    console.log('可能是zlib压缩数据');
+    // 3. 使用3DES-ECB模式解密（无填充）
+    let decryptedBuffer;
     
     try {
-      const decompressed = zlib.inflateSync(data);
-      console.log('zlib解压成功，长度:', decompressed.length);
-      console.log('解压后前100字符(utf8):', decompressed.toString('utf8').substring(0, 100));
+      // 标准3DES解密（24字节密钥，ECB模式）
+      const decipher = crypto.createDecipheriv('des-ede3', keyBuffer, Buffer.alloc(0));
+      decipher.setAutoPadding(false);
+      decryptedBuffer = Buffer.concat([decipher.update(encryptedBuffer), decipher.final()]);
+      console.log('3DES解密成功，长度:', decryptedBuffer.length);
+      console.log('解密后前16字节(hex):', decryptedBuffer.slice(0, 16).toString('hex'));
+    } catch (desError) {
+      console.error('标准3DES解密失败:', desError.message);
+      return '';
+    }
+    
+    // 4. 检查解密结果并解压缩
+    let finalText = '';
+    
+    // 先尝试直接解码，看是否已经是文本
+    const directText = decryptedBuffer.toString('utf8', 'ignore');
+    if (containsReadableContent(directText)) {
+      console.log('解密后数据已经是可读文本');
+      finalText = directText;
+    } else {
+      // 尝试解压缩
+      console.log('尝试解压缩...');
+      finalText = tryDecompress(decryptedBuffer);
+    }
+    
+    // 5. 提取歌词内容
+    if (finalText) {
+      finalText = extractLyricContent(finalText);
+      console.log('最终解密结果长度:', finalText.length);
+      console.log('前200字符:', finalText.substring(0, Math.min(200, finalText.length)));
+    }
+    
+    return finalText;
+    
+  } catch (error) {
+    console.error('解密失败:', error);
+    return '';
+  }
+}
+
+// 尝试解压缩数据
+function tryDecompress(buffer) {
+  // 尝试多种解压缩方法
+  const methods = [
+    { name: 'inflate', fn: (buf) => zlib.inflateSync(buf) },
+    { name: 'inflateRaw', fn: (buf) => zlib.inflateRawSync(buf) },
+    { name: 'gunzip', fn: (buf) => zlib.gunzipSync(buf) }
+  ];
+  
+  for (const method of methods) {
+    try {
+      console.log(`尝试 ${method.name} 解压缩...`);
+      const decompressed = method.fn(buffer);
+      
+      // 转换为文本并检查是否可读
+      const text = decompressed.toString('utf8', 'ignore');
+      if (containsReadableContent(text)) {
+        console.log(`${method.name} 解压缩成功，长度: ${text.length}`);
+        return text;
+      }
     } catch (e) {
-      console.log('zlib解压失败:', e.message);
+      // 继续尝试下一种方法
     }
   }
   
-  // gzip头检查
-  if (byte1 === 0x1F && byte2 === 0x8B) {
-    console.log('可能是gzip压缩数据');
-  }
+  console.log('所有解压缩方法都失败，尝试直接解码为文本');
   
-  // 检查是否是XML格式
-  const asString = data.toString('utf8', 'ignore');
-  if (asString.includes('<?xml') || asString.includes('<Lyric_')) {
-    console.log('包含XML标签');
-    console.log('XML内容预览:', asString.substring(0, 200));
-  }
-  
-  // 尝试不同编码
+  // 尝试不同编码直接解码
   const encodings = ['utf8', 'utf16le', 'gbk', 'gb2312', 'latin1'];
   for (const encoding of encodings) {
     try {
-      const text = data.toString(encoding);
-      if (text && text.length > 0) {
-        // 统计可打印字符
-        let printable = 0;
-        const sample = text.substring(0, Math.min(200, text.length));
-        for (let i = 0; i < sample.length; i++) {
-          const code = sample.charCodeAt(i);
-          if ((code >= 32 && code <= 126) || (code >= 0x4E00 && code <= 0x9FFF)) {
-            printable++;
-          }
-        }
-        const ratio = printable / sample.length;
-        console.log(`${encoding} 编码: ${printable}/${sample.length}=${ratio.toFixed(2)}`);
-        if (ratio > 0.5) {
-          console.log(`${encoding} 可能正确:`, sample);
-        }
+      const text = buffer.toString(encoding);
+      if (containsReadableContent(text)) {
+        console.log(`使用 ${encoding} 编码成功，长度: ${text.length}`);
+        return text;
       }
     } catch (e) {
-      // 忽略错误
+      // 忽略编码错误
     }
   }
+  
+  // 最后尝试UTF-8忽略无效字节
+  console.log('所有方法都失败，使用UTF-8忽略无效字节');
+  return buffer.toString('utf8', 'ignore');
 }
-
-// ================ 替换原有的解密函数 ================
-
-// 在 getEncryptedLyrics 函数中，将解密调用改为：
-// const decryptedText = debugDecryptQrcLyrics(encryptedContent);
 
 // 提取歌词内容
 function extractLyricContent(text) {
@@ -498,6 +351,83 @@ function processDecryptedText(decryptedText) {
   processedText = processedText.trim();
   
   return processedText;
+}
+
+// ================ 获取加密歌词 ================
+
+async function getEncryptedLyrics(songId) {
+  try {
+    console.log(`=== 开始获取逐字歌词，歌曲ID: ${songId} ===`);
+    
+    const params = new URLSearchParams({
+      version: '15',
+      miniversion: '82',
+      lrctype: '4',
+      musicid: songId
+    });
+    
+    console.log('请求URL: https://c.y.qq.com/qqmusic/fcgi-bin/lyric_download.fcg');
+    console.log('请求参数:', params.toString());
+    
+    const response = await axios.get(`https://c.y.qq.com/qqmusic/fcgi-bin/lyric_download.fcg?${params}`, {
+      headers: {
+        'Referer': 'https://c.y.qq.com/'
+      },
+      timeout: 10000
+    });
+    
+    let data = response.data;
+    console.log('API响应长度:', data.length);
+    
+    // 检查响应是否包含预期内容
+    if (!data || data.length < 100) {
+      console.log('响应内容过短，可能无效');
+      return '';
+    }
+    
+    console.log('API响应前500字符:', data.substring(0, 500));
+    
+    // 移除XML注释
+    data = data.replace(/<!--|-->/g, '');
+    console.log('移除注释后长度:', data.length);
+    
+    // 提取加密内容
+    const encryptedContent = extractEncryptedContent(data);
+    
+    if (!encryptedContent) {
+      console.log('未找到加密内容');
+      return '';
+    }
+    
+    console.log('加密内容长度:', encryptedContent.length);
+    console.log('加密内容前100字符:', encryptedContent.substring(0, 100));
+    
+    // 解密歌词
+    try {
+      const decryptedText = decryptQrcLyrics(encryptedContent);
+      
+      if (!decryptedText || decryptedText.trim().length === 0) {
+        console.log('解密文本为空');
+        return '';
+      }
+      
+      console.log('解密成功，解密文本长度:', decryptedText.length);
+      
+      // 处理解密后的文本
+      const finalLyrics = processDecryptedText(decryptedText);
+      console.log('最终逐字歌词长度:', finalLyrics.length);
+      
+      return finalLyrics;
+      
+    } catch (decryptError) {
+      console.error('解密失败:', decryptError.message);
+      return '';
+    }
+    
+  } catch (error) {
+    console.error('获取逐字歌词失败:', error.message);
+    return '';
+  }
 }
 
 // ================ 原有辅助函数 ================
