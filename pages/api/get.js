@@ -209,6 +209,7 @@ function extractEncryptedContentFromXml(xmlText) {
 }
 
 // 解密QRC歌词（基于C#代码的实现）
+// 修正版解密QRC歌词
 function decryptQrcLyrics(encryptedHex) {
   try {
     console.log('=== 开始解密QRC歌词 ===');
@@ -217,79 +218,125 @@ function decryptQrcLyrics(encryptedHex) {
     // 1. 十六进制字符串转Buffer
     const encryptedBuffer = Buffer.from(encryptedHex, 'hex');
     console.log('二进制长度:', encryptedBuffer.length, '字节');
+    console.log('加密数据前16字节(hex):', encryptedBuffer.slice(0, 16).toString('hex'));
     
-    // 2. 准备24字节密钥（关键！与C#代码一致）
-    const QQKey = "!@#)(*$%123ZXC!@!@#)(NHL";
-    const keyBuffer = Buffer.from(QQKey, 'ascii');
+    // 2. 尝试多种密钥方案
+    const keyOptions = generateKeyOptions();
     
-    console.log('24字节密钥:', keyBuffer.toString('hex'));
-    console.log('密钥ASCII:', QQKey);
+    // 3. 尝试不同的解密方案
+    let decryptedBuffer = null;
+    let successfulMethod = '';
     
-    // 3. 使用3DES-ECB模式解密（无填充）
-    let decryptedBuffer;
-    
-    try {
-      // 标准3DES解密（24字节密钥，ECB模式）
-      const decipher = crypto.createDecipheriv('des-ede3', keyBuffer, Buffer.alloc(0));
-      decipher.setAutoPadding(false);
-      decryptedBuffer = Buffer.concat([decipher.update(encryptedBuffer), decipher.final()]);
-      console.log('3DES解密成功，长度:', decryptedBuffer.length);
-    } catch (desError) {
-      console.error('标准3DES解密失败:', desError.message);
-      
-      // 备用方案：手动实现3DES解密
-      decryptedBuffer = manualTripleDesDecrypt(encryptedBuffer, keyBuffer);
-      console.log('手动3DES解密成功，长度:', decryptedBuffer.length);
-    }
-    
-    // 4. 检查解密结果
-    if (!isValidDecryptedData(decryptedBuffer)) {
-      console.error('解密数据无效');
-      return '';
-    }
-    
-    // 5. 解压缩
-    let decompressedBuffer = decryptedBuffer;
-    
-    try {
-      // 先尝试zlib解压
-      decompressedBuffer = zlib.inflateSync(decryptedBuffer);
-      console.log('zlib解压缩成功，长度:', decompressedBuffer.length);
-    } catch (inflateError) {
-      console.log('zlib解压缩失败，尝试inflateRaw:', inflateError.message);
+    for (const option of keyOptions) {
+      console.log(`\n尝试密钥方案: ${option.name}`);
+      console.log('密钥(hex):', option.key.toString('hex'));
       
       try {
-        decompressedBuffer = zlib.inflateRawSync(decryptedBuffer);
-        console.log('inflateRaw解压缩成功，长度:', decompressedBuffer.length);
-      } catch (rawError) {
-        console.log('inflateRaw也失败，尝试gzip:', rawError.message);
-        
-        try {
-          decompressedBuffer = zlib.gunzipSync(decryptedBuffer);
-          console.log('gzip解压缩成功，长度:', decompressedBuffer.length);
-        } catch (gzipError) {
-          console.log('所有解压缩都失败，使用原始数据:', gzipError.message);
-          decompressedBuffer = decryptedBuffer;
+        // 方案1: 标准3DES解密
+        const result1 = tryStandardDesDecrypt(encryptedBuffer, option.key);
+        if (isValidDecryptedData(result1)) {
+          decryptedBuffer = result1;
+          successfulMethod = `${option.name} - 标准3DES`;
+          break;
         }
+        
+        // 方案2: 手动3DES解密
+        const result2 = tryManualTripleDesDecrypt(encryptedBuffer, option.key);
+        if (isValidDecryptedData(result2)) {
+          decryptedBuffer = result2;
+          successfulMethod = `${option.name} - 手动3DES`;
+          break;
+        }
+        
+        // 方案3: 单个DES解密
+        const result3 = trySingleDesDecrypt(encryptedBuffer, option.key);
+        if (isValidDecryptedData(result3)) {
+          decryptedBuffer = result3;
+          successfulMethod = `${option.name} - 单个DES`;
+          break;
+        }
+      } catch (e) {
+        console.log(`方案失败:`, e.message);
       }
     }
     
-    // 6. 移除UTF-8 BOM（如果有）
+    if (!decryptedBuffer) {
+      console.error('所有解密方案都失败');
+      return '';
+    }
+    
+    console.log(`\n解密成功！使用方案: ${successfulMethod}`);
+    console.log('解密后长度:', decryptedBuffer.length);
+    console.log('解密数据前16字节(hex):', decryptedBuffer.slice(0, 16).toString('hex'));
+    console.log('解密数据前64字节(ascii):', decryptedBuffer.slice(0, 64).toString('ascii'));
+    
+    // 4. 尝试解压缩
+    let decompressedBuffer = decryptedBuffer;
+    
+    // 首先检查是否是常见的压缩格式
+    const decompressionMethods = [
+      { name: 'zlib inflate', fn: () => zlib.inflateSync(decryptedBuffer) },
+      { name: 'zlib inflateRaw', fn: () => zlib.inflateRawSync(decryptedBuffer) },
+      { name: 'gzip', fn: () => zlib.gunzipSync(decryptedBuffer) },
+      { name: 'deflate', fn: () => zlib.deflateSync(decryptedBuffer) },
+      { name: 'brotli', fn: () => zlib.brotliDecompressSync ? zlib.brotliDecompressSync(decryptedBuffer) : null }
+    ];
+    
+    let decompressionSuccess = false;
+    for (const method of decompressionMethods) {
+      try {
+        decompressedBuffer = method.fn();
+        if (decompressedBuffer && decompressedBuffer.length > 0) {
+          console.log(`${method.name} 解压缩成功，长度: ${decompressedBuffer.length}`);
+          decompressionSuccess = true;
+          break;
+        }
+      } catch (e) {
+        // 继续尝试下一种方法
+      }
+    }
+    
+    if (!decompressionSuccess) {
+      console.log('所有解压缩方法都失败，尝试其他方法...');
+      
+      // 尝试检测是否是纯文本（未压缩）
+      const asString = decryptedBuffer.toString('utf8', 'ignore');
+      if (containsReadableContent(asString)) {
+        console.log('解密数据可能是未压缩的文本，直接使用');
+        decompressedBuffer = decryptedBuffer;
+      } else {
+        // 尝试将数据视为已解压
+        console.log('将解密数据视为已解压数据');
+        decompressedBuffer = decryptedBuffer;
+      }
+    }
+    
+    // 5. 移除可能的BOM
     const utf8Bom = Buffer.from([0xEF, 0xBB, 0xBF]);
+    const utf16LeBom = Buffer.from([0xFF, 0xFE]);
+    const utf16BeBom = Buffer.from([0xFE, 0xFF]);
+    
     if (decompressedBuffer.slice(0, 3).equals(utf8Bom)) {
       decompressedBuffer = decompressedBuffer.slice(3);
       console.log('移除了UTF-8 BOM');
+    } else if (decompressedBuffer.slice(0, 2).equals(utf16LeBom)) {
+      decompressedBuffer = decompressedBuffer.slice(2);
+      console.log('移除了UTF-16LE BOM');
+    } else if (decompressedBuffer.slice(0, 2).equals(utf16BeBom)) {
+      decompressedBuffer = decompressedBuffer.slice(2);
+      console.log('移除了UTF-16BE BOM');
     }
     
-    // 7. 转换为字符串
+    // 6. 转换为字符串
     let resultText = '';
-    const encodings = ['utf8', 'utf16le', 'gbk', 'gb2312', 'latin1'];
+    const encodings = ['utf8', 'utf16le', 'gbk', 'gb2312', 'latin1', 'ascii'];
     
     for (const encoding of encodings) {
       try {
         const text = decompressedBuffer.toString(encoding);
         if (containsReadableContent(text)) {
-          console.log(`使用 ${encoding} 编码成功`);
+          console.log(`使用 ${encoding} 编码成功，长度: ${text.length}`);
+          console.log(`前100字符: ${text.substring(0, Math.min(100, text.length))}`);
           resultText = text;
           break;
         }
@@ -299,13 +346,14 @@ function decryptQrcLyrics(encryptedHex) {
     }
     
     if (!resultText) {
+      console.log('所有编码尝试都失败，使用UTF-8（忽略无效字节）');
       resultText = decompressedBuffer.toString('utf8', 'ignore');
-      console.log('使用UTF-8（忽略无效字节）');
     }
     
-    console.log('解密完成，结果长度:', resultText.length);
-    console.log('解密结果前200字符:', resultText.substring(0, Math.min(200, resultText.length)));
+    // 7. 提取歌词内容
+    resultText = extractLyricContent(resultText);
     
+    console.log('最终解密结果长度:', resultText.length);
     return resultText;
     
   } catch (error) {
@@ -314,52 +362,102 @@ function decryptQrcLyrics(encryptedHex) {
   }
 }
 
-// 手动实现3DES解密（备用方案）
-function manualTripleDesDecrypt(data, key24) {
-  // 24字节密钥分成3个8字节
-  // 根据C#代码，解密模式使用：第一轮用key[16..23]，第二轮用key[8..15]（加密），第三轮用key[0..7]
-  const key1 = key24.slice(16, 24);  // 第三段 -> 第一轮
-  const key2 = key24.slice(8, 16);   // 第二段 -> 第二轮
-  const key3 = key24.slice(0, 8);    // 第一段 -> 第三轮
+// 生成不同的密钥选项
+function generateKeyOptions() {
+  const keyOptions = [];
   
-  console.log('手动3DES密钥分段:');
-  console.log('  Key1 (16-23):', key1.toString('hex'));
-  console.log('  Key2 (8-15):', key2.toString('hex'));
-  console.log('  Key3 (0-7):', key3.toString('hex'));
+  // 原始三个密钥
+  const key1Full = "!@#)(NHLiuy*$%^&";
+  const key2Full = "123ZXC!@#)(*$%^&";
+  const key3Full = "!@#)(*$%^&abcDEF";
+  
+  // 选项1: C#代码中的24字节密钥
+  const option1 = Buffer.concat([
+    Buffer.from(key3Full, 'ascii').slice(0, 8),
+    Buffer.from(key2Full, 'ascii').slice(0, 8),
+    Buffer.from(key1Full, 'ascii').slice(0, 8)
+  ]);
+  keyOptions.push({ name: 'C#标准密钥', key: option1 });
+  
+  // 选项2: 反向顺序
+  const option2 = Buffer.concat([
+    Buffer.from(key1Full, 'ascii').slice(0, 8),
+    Buffer.from(key2Full, 'ascii').slice(0, 8),
+    Buffer.from(key3Full, 'ascii').slice(0, 8)
+  ]);
+  keyOptions.push({ name: '反向顺序', key: option2 });
+  
+  // 选项3: 只使用key1（8字节）
+  const option3 = Buffer.from(key1Full, 'ascii').slice(0, 8);
+  keyOptions.push({ name: '仅Key1', key: option3 });
+  
+  // 选项4: 使用完整的16字节（但DES只使用前8字节）
+  const option4 = Buffer.from(key1Full, 'ascii');
+  keyOptions.push({ name: 'Key1完整', key: option4 });
+  
+  // 选项5: 使用key2
+  const option5 = Buffer.from(key2Full, 'ascii').slice(0, 8);
+  keyOptions.push({ name: '仅Key2', key: option5 });
+  
+  // 选项6: 使用key3
+  const option6 = Buffer.from(key3Full, 'ascii').slice(0, 8);
+  keyOptions.push({ name: '仅Key3', key: option6 });
+  
+  return keyOptions;
+}
+
+// 尝试标准3DES解密
+function tryStandardDesDecrypt(data, key) {
+  try {
+    const decipher = crypto.createDecipheriv('des-ede3', key, Buffer.alloc(0));
+    decipher.setAutoPadding(false);
+    return Buffer.concat([decipher.update(data), decipher.final()]);
+  } catch (e) {
+    throw new Error(`标准3DES失败: ${e.message}`);
+  }
+}
+
+// 尝试手动3DES解密
+function tryManualTripleDesDecrypt(data, key) {
+  // 假设key是24字节
+  if (key.length !== 24) {
+    // 如果不是24字节，尝试用这个key作为单个DES密钥
+    return trySingleDesDecrypt(data, key.slice(0, 8));
+  }
+  
+  // 分三段
+  const key1 = key.slice(0, 8);
+  const key2 = key.slice(8, 16);
+  const key3 = key.slice(16, 24);
   
   let result = Buffer.alloc(data.length);
   
-  // 分块处理（每8字节）
+  // 分块处理
   for (let i = 0; i < data.length; i += 8) {
     const block = data.slice(i, i + 8);
     let temp = block;
     
+    // 第一轮：解密（key3）
     try {
-      // 第一轮：用key1解密（对应C#代码中的第三轮）
-      const decipher1 = crypto.createDecipheriv('des-ecb', key1, Buffer.alloc(0));
+      const decipher1 = crypto.createDecipheriv('des-ecb', key3, Buffer.alloc(0));
       decipher1.setAutoPadding(false);
       temp = Buffer.concat([decipher1.update(temp), decipher1.final()]);
-    } catch (e) {
-      console.error('第一轮解密失败:', e.message);
-    }
+    } catch (e) {}
     
+    // 第二轮：加密（key2）
     try {
-      // 第二轮：用key2加密
       const cipher = crypto.createCipheriv('des-ecb', key2, Buffer.alloc(0));
       cipher.setAutoPadding(false);
       temp = Buffer.concat([cipher.update(temp), cipher.final()]);
-    } catch (e) {
-      console.error('第二轮加密失败:', e.message);
-    }
+    } catch (e) {}
     
+    // 第三轮：解密（key1）
     try {
-      // 第三轮：用key3解密
-      const decipher2 = crypto.createDecipheriv('des-ecb', key3, Buffer.alloc(0));
+      const decipher2 = crypto.createDecipheriv('des-ecb', key1, Buffer.alloc(0));
       decipher2.setAutoPadding(false);
       const finalBlock = Buffer.concat([decipher2.update(temp), decipher2.final()]);
       finalBlock.copy(result, i);
     } catch (e) {
-      console.error('第三轮解密失败:', e.message);
       temp.copy(result, i);
     }
   }
@@ -367,97 +465,83 @@ function manualTripleDesDecrypt(data, key24) {
   return result;
 }
 
+// 尝试单个DES解密
+function trySingleDesDecrypt(data, key) {
+  try {
+    // 确保key是8字节
+    const desKey = key.length >= 8 ? key.slice(0, 8) : key;
+    
+    const decipher = crypto.createDecipheriv('des-ecb', desKey, Buffer.alloc(0));
+    decipher.setAutoPadding(false);
+    return Buffer.concat([decipher.update(data), decipher.final()]);
+  } catch (e) {
+    throw new Error(`单个DES失败: ${e.message}`);
+  }
+}
+
 // 检查解密数据是否有效
 function isValidDecryptedData(buffer) {
   if (!buffer || buffer.length === 0) return false;
   
-  // 检查是否是压缩数据
+  // 检查前几个字节是否是常见格式
   if (buffer.length >= 2) {
-    const isZlib = buffer[0] === 0x78 && 
-                   (buffer[1] === 0x01 || buffer[1] === 0x9C || buffer[1] === 0xDA);
-    const isGzip = buffer[0] === 0x1F && buffer[1] === 0x8B;
+    const byte1 = buffer[0];
+    const byte2 = buffer[1];
+    
+    // 检查是否是压缩格式
+    const isZlib = (byte1 === 0x78 && (byte2 === 0x01 || byte2 === 0x9C || byte2 === 0xDA));
+    const isGzip = (byte1 === 0x1F && byte2 === 0x8B);
     
     if (isZlib || isGzip) {
-      console.log('解密数据是压缩格式');
+      console.log('数据是压缩格式');
       return true;
     }
   }
   
   // 检查是否包含XML特征
-  const sampleText = buffer.slice(0, Math.min(200, buffer.length)).toString('utf8', 'ignore');
-  if (sampleText.includes('<?xml') || sampleText.includes('<Lyric_1') || sampleText.includes('LyricContent')) {
-    console.log('解密数据包含XML特征');
+  const sample = buffer.slice(0, Math.min(200, buffer.length)).toString('utf8', 'ignore');
+  if (sample.includes('<?xml') || sample.includes('<Lyric_1') || sample.includes('LyricContent')) {
+    console.log('数据包含XML特征');
     return true;
   }
   
   // 检查是否包含可读文本
   const text = buffer.toString('utf8', 'ignore');
   if (containsReadableContent(text)) {
-    console.log('解密数据包含可读文本');
+    console.log('数据包含可读文本');
     return true;
   }
   
   return false;
 }
 
-// 检查文本是否包含可读内容
-function containsReadableContent(text) {
-  if (!text || text.length < 10) return false;
+// 提取歌词内容
+function extractLyricContent(text) {
+  if (!text) return '';
   
-  let readable = 0;
-  const sampleSize = Math.min(text.length, 1000);
+  let result = text;
   
-  for (let i = 0; i < sampleSize; i++) {
-    const code = text.charCodeAt(i);
-    
-    // 中文字符
-    if (code >= 0x4E00 && code <= 0x9FFF) {
-      readable++;
-    }
-    // 可打印ASCII字符
-    else if (code >= 32 && code <= 126) {
-      readable++;
-    }
-    // 常见标点和控制字符
-    else if (code === 10 || code === 13 || code === 9) {
-      readable++;
-    }
-  }
+  // 尝试从XML中提取歌词内容
+  const patterns = [
+    /LyricContent="([^"]+)"/,
+    /<Lyric_1[^>]*>([\s\S]*?)<\/Lyric_1>/,
+    /<lyric[^>]*>([\s\S]*?)<\/lyric>/,
+    /<content[^>]*>([^<]+)<\/content>/,
+  ];
   
-  const ratio = readable / sampleSize;
-  console.log(`可读性检查: ${readable}/${sampleSize}=${ratio.toFixed(3)}`);
-  return ratio > 0.3;
-}
-
-// 处理解密后的文本
-function processDecryptedText(decryptedText) {
-  if (!decryptedText) return '';
-  
-  let processedText = decryptedText;
-  
-  // 如果是XML格式，提取歌词内容
-  if (decryptedText.includes('LyricContent="')) {
-    const match = decryptedText.match(/LyricContent="([^"]+)"/);
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
     if (match && match[1]) {
-      processedText = decodeHtmlEntities(match[1]);
-      console.log('从XML中提取歌词内容');
+      const content = decodeHtmlEntities(match[1]);
+      if (content && content.trim().length > 0) {
+        console.log(`使用模式 ${pattern} 提取到歌词内容`);
+        result = content;
+        break;
+      }
     }
   }
   
-  // 如果是XML格式但没有LyricContent属性，尝试其他方式
-  else if (decryptedText.includes('<?xml') || decryptedText.includes('<Lyric_1')) {
-    // 尝试匹配<Lyric_1>标签内容
-    const tagMatch = decryptedText.match(/<Lyric_1[^>]*>([\s\S]*?)<\/Lyric_1>/);
-    if (tagMatch && tagMatch[1]) {
-      processedText = decodeHtmlEntities(tagMatch[1]);
-      console.log('从<Lyric_1>标签提取歌词内容');
-    }
-  }
-  
-  // 清理文本
-  processedText = processedText.trim();
-  
-  return processedText;
+  return result;
 }
 
 // 解码HTML实体
