@@ -892,40 +892,36 @@ async function getEncryptedLyrics(songId) {
     });
     
     let data = response.data;
-    console.log('加密歌词响应前200字符:', data.substring(0, 200));
     
     // 移除注释
     data = data.replace(/<!--|-->/g, '');
     
-    // 尝试多种方式解析XML
-    const encryptedLyrics = parseEncryptedLyricsFromResponse(data);
-    console.log('解析到的加密歌词内容:', Object.keys(encryptedLyrics).filter(k => encryptedLyrics[k]).length ? '有内容' : '无内容');
+    // 解析XML获取加密歌词 - 使用与C#代码相同的正则表达式
+    const encryptedLyrics = parseEncryptedLyricsFromXml(data);
     
     let yrcLyrics = '';
     
-    // 尝试所有可能的加密内容字段
-    const fieldsToTry = ['orig', 'content', 'content_orig', 'lyric', 'lyric_encrypted'];
-    
-    for (const field of fieldsToTry) {
-      if (encryptedLyrics[field] && encryptedLyrics[field].trim()) {
-        console.log(`尝试解密字段 ${field}, 长度:`, encryptedLyrics[field].length);
-        try {
-          // 解密歌词
-          const decryptedText = decryptQrcLyrics(encryptedLyrics[field]);
-          console.log(`字段 ${field} 解密成功，长度:`, decryptedText.length);
-          
-          if (decryptedText) {
-            yrcLyrics = decryptedText;
-            console.log(`使用字段 ${field} 的逐字歌词，长度:`, yrcLyrics.length);
-            break;
+    // 尝试解密原文（orig）
+    if (encryptedLyrics.orig && encryptedLyrics.orig.trim()) {
+      try {
+        // 解密歌词
+        const decryptedText = decryptLyrics(encryptedLyrics.orig);
+        
+        // 如果解密后的文本包含XML，进一步解析
+        if (decryptedText.includes('<?xml')) {
+          const lyricContent = parseLyricContentFromXml(decryptedText);
+          if (lyricContent) {
+            yrcLyrics = lyricContent;
           }
-        } catch (error) {
-          console.warn(`字段 ${field} 解密失败:`, error.message);
+        } else {
+          // 直接使用解密后的文本
+          yrcLyrics = decryptedText;
         }
+      } catch (error) {
+        console.error('解密逐字歌词失败:', error.message);
       }
     }
     
-    console.log('最终yrcLyrics长度:', yrcLyrics.length);
     return yrcLyrics;
     
   } catch (error) {
@@ -934,149 +930,457 @@ async function getEncryptedLyrics(songId) {
   }
 }
 
-// 从响应中解析加密歌词，尝试多种可能的格式
-function parseEncryptedLyricsFromResponse(responseText) {
+// 从XML解析加密歌词 - 匹配C#代码中的逻辑
+function parseEncryptedLyricsFromXml(xmlText) {
   const result = {
     orig: '',  // 原文
     ts: '',    // 译文
-    roma: '',  // 罗马音
-    content: '',
-    lyric: ''
+    roma: ''   // 罗马音
   };
   
   try {
-    // 方法1: 尝试提取CDATA内容
-    const cdataMatch = responseText.match(/<!\[CDATA\[(.*?)\]\]>/s);
-    if (cdataMatch && cdataMatch[1]) {
-      console.log('找到CDATA内容');
-      // 在CDATA中进一步查找
-      const cdataContent = cdataMatch[1];
-      
-      // 尝试找<content>标签
-      const contentMatch = cdataContent.match(/<content>([\s\S]*?)<\/content>/);
-      if (contentMatch && contentMatch[1]) {
-        result.content = contentMatch[1].trim();
-      }
-      
-      // 尝试找<lyric>标签
-      const lyricMatch = cdataContent.match(/<lyric>([\s\S]*?)<\/lyric>/);
-      if (lyricMatch && lyricMatch[1]) {
-        result.lyric = lyricMatch[1].trim();
-      }
+    // 使用正则表达式提取content、contentts、contentroma节点
+    // 匹配 <content>...</content>
+    const origMatch = xmlText.match(/<content>([\s\S]*?)<\/content>/);
+    const tsMatch = xmlText.match(/<contentts>([\s\S]*?)<\/contentts>/);
+    const romaMatch = xmlText.match(/<contentroma>([\s\S]*?)<\/contentroma>/);
+    
+    if (origMatch && origMatch[1]) {
+      result.orig = origMatch[1].trim();
     }
     
-    // 方法2: 直接查找可能的加密内容（长16进制字符串）
-    const hexMatches = responseText.match(/[0-9A-Fa-f]{64,}/g);
-    if (hexMatches && hexMatches.length > 0) {
-      console.log('找到可能的16进制加密内容，数量:', hexMatches.length);
-      // 取最长的16进制字符串
-      const longestHex = hexMatches.reduce((a, b) => a.length > b.length ? a : b);
-      result.orig = longestHex;
+    if (tsMatch && tsMatch[1]) {
+      result.ts = tsMatch[1].trim();
     }
     
-    // 方法3: 尝试解析command-lable标签
-    if (responseText.includes('<command-lable')) {
-      console.log('检测到command-lable标签');
-      // 尝试提取标签内的所有文本内容
-      const textContent = responseText.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-      // 在文本内容中查找16进制字符串
-      const hexInText = textContent.match(/[0-9A-Fa-f]{64,}/);
-      if (hexInText) {
-        result.orig = hexInText[0];
-      }
+    if (romaMatch && romaMatch[1]) {
+      result.roma = romaMatch[1].trim();
     }
-    
-    // 方法4: 尝试直接匹配QQ音乐可能的标签格式
-    const qqLyricMatch = responseText.match(/<qq:lyric[^>]*>([^<]+)<\/qq:lyric>/i);
-    if (qqLyricMatch && qqLyricMatch[1]) {
-      console.log('找到qq:lyric标签内容');
-      result.lyric = qqLyricMatch[1].trim();
-    }
-    
-    console.log('解析结果:', {
-      origLength: result.orig.length,
-      contentLength: result.content.length,
-      lyricLength: result.lyric.length,
-      tsLength: result.ts.length,
-      romaLength: result.roma.length
-    });
     
   } catch (error) {
-    console.error('解析响应失败:', error);
+    console.error('XML解析失败:', error);
   }
   
   return result;
 }
 
-// 解密QRC歌词（基于C#的DecryptLyrics方法）
-function decryptQrcLyrics(encryptedLyrics) {
+// 从解密后的XML中提取LyricContent
+function parseLyricContentFromXml(xmlText) {
   try {
-    console.log('解密开始，输入长度:', encryptedLyrics.length);
-    
-    // 检查是否是有效的16进制字符串
-    if (!/^[0-9A-Fa-f]+$/.test(encryptedLyrics)) {
-      console.error('不是有效的16进制字符串，前50字符:', encryptedLyrics.substring(0, 50));
-      // 如果不是16进制，尝试直接返回（可能是已经解密的文本）
-      if (encryptedLyrics.includes('[') || encryptedLyrics.includes(']')) {
-        console.log('看起来已经是歌词格式，直接返回');
-        return encryptedLyrics;
-      }
-      throw new Error('Invalid hex string');
+    // 首先尝试匹配Lyric_1节点的LyricContent属性
+    const attrMatch = xmlText.match(/<Lyric_1[^>]*LyricContent="([^"]+)"[^>]*>/);
+    if (attrMatch && attrMatch[1]) {
+      return decodeHtmlEntities(attrMatch[1]);
     }
     
-    // 检查长度是否合适（应该是8的倍数）
-    if (encryptedLyrics.length % 16 !== 0) {
-      console.warn('16进制字符串长度不是16的倍数，可能不是3DES加密数据');
+    // 如果没有找到属性，尝试匹配<Lyric_1>标签的内容
+    const contentMatch = xmlText.match(/<Lyric_1[^>]*>([\s\S]*?)<\/Lyric_1>/);
+    if (contentMatch && contentMatch[1]) {
+      return decodeHtmlEntities(contentMatch[1]);
     }
     
-    // 将16进制字符串转换为字节数组
-    const encryptedBytes = hexStringToByteArray(encryptedLyrics);
-    console.log('加密字节长度:', encryptedBytes.length);
-    
-    // 3DES解密密钥
-    const key = '!@#)(*$%123ZXC!@!@#)(NHL';
-    
-    // 使用CryptoJS进行3DES解密
-    const decryptedBytes = tripleDesDecrypt(encryptedBytes, key);
-    console.log('解密后字节长度:', decryptedBytes.length);
-    
-    // 使用zlib解压缩
-    const decompressed = zlibInflate(decryptedBytes);
-    console.log('解压缩后长度:', decompressed.length);
-    
-    // 移除UTF-8 BOM（如果有）
-    const utf8Bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
-    let resultBytes = decompressed;
-    
-    if (resultBytes.length >= 3 &&
-        resultBytes[0] === utf8Bom[0] &&
-        resultBytes[1] === utf8Bom[1] &&
-        resultBytes[2] === utf8Bom[2]) {
-      console.log('检测到BOM，已移除');
-      resultBytes = resultBytes.slice(3);
-    }
-    
-    // 转换为UTF-8字符串
-    const result = new TextDecoder('utf-8').decode(resultBytes);
-    console.log('解密结果长度:', result.length);
-    console.log('解密结果前100字符:', result.substring(0, Math.min(100, result.length)));
-    
-    return result;
+    return '';
     
   } catch (error) {
-    console.error('解密QRC歌词失败:', error);
-    throw error;
+    console.error('解析LyricContent失败:', error);
+    return '';
   }
+}
+
+// 解码HTML实体
+function decodeHtmlEntities(text) {
+  const entities = {
+    '&amp;': '&',
+    '&lt;': '<',
+    '&gt;': '>',
+    '&quot;': '"',
+    '&#39;': "'",
+    '&nbsp;': ' '
+  };
+  
+  return text.replace(/&amp;|&lt;|&gt;|&quot;|&#39;|&nbsp;/g, match => entities[match]);
+}
+
+// 解密QRC歌词 - 基于C#的DecryptLyrics方法
+function decryptLyrics(encryptedLyrics) {
+  // 将16进制字符串转换为字节数组
+  const encryptedBytes = hexStringToByteArray(encryptedLyrics);
+  
+  // 准备输出数据
+  const data = new Uint8Array(encryptedBytes.length);
+  
+  // 创建3DES调度表
+  const schedule = createTripleDESSchedule();
+  
+  // 设置3DES密钥（解密模式）
+  tripleDESKeySetup(QQKey, schedule, 0); // 0 表示 DECRYPT
+  
+  // 按8字节块进行解密
+  for (let i = 0; i < encryptedBytes.length; i += 8) {
+    const temp = new Uint8Array(8);
+    tripleDESCrypt(encryptedBytes.slice(i, i + 8), temp, schedule);
+    
+    for (let j = 0; j < 8; j++) {
+      data[i + j] = temp[j];
+    }
+  }
+  
+  // 解压缩
+  const unzip = sharpZipLibDecompress(data);
+  
+  // 移除UTF-8 BOM（如果有）
+  const utf8Bom = new TextEncoder().encode('\uFEFF');
+  let resultBytes = unzip;
+  
+  if (resultBytes.length >= utf8Bom.length) {
+    let hasBom = true;
+    for (let i = 0; i < utf8Bom.length; i++) {
+      if (resultBytes[i] !== utf8Bom[i]) {
+        hasBom = false;
+        break;
+      }
+    }
+    
+    if (hasBom) {
+      resultBytes = resultBytes.slice(utf8Bom.length);
+    }
+  }
+  
+  // 转换为UTF-8字符串
+  return new TextDecoder('utf-8').decode(resultBytes);
+}
+
+// QQ音乐解密密钥
+const QQKey = new TextEncoder().encode('!@#)(*$%123ZXC!@!@#)(NHL');
+
+// 创建3DES调度表
+function createTripleDESSchedule() {
+  const schedule = [];
+  for (let i = 0; i < 3; i++) {
+    schedule[i] = [];
+    for (let j = 0; j < 16; j++) {
+      schedule[i][j] = new Uint8Array(6);
+    }
+  }
+  return schedule;
+}
+
+// 3DES密钥设置 - 基于C#的DESHelper.TripleDESKeySetup
+function tripleDESKeySetup(key, schedule, mode) {
+  // ENCRYPT = 1, DECRYPT = 0
+  const ENCRYPT = 1;
+  const DECRYPT = 0;
+  
+  if (mode === ENCRYPT) {
+    keySchedule(key.slice(0, 8), schedule[0], mode);
+    keySchedule(key.slice(8, 16), schedule[1], DECRYPT);
+    keySchedule(key.slice(16, 24), schedule[2], mode);
+  } else { // DECRYPT
+    keySchedule(key.slice(0, 8), schedule[2], mode);
+    keySchedule(key.slice(8, 16), schedule[1], ENCRYPT);
+    keySchedule(key.slice(16, 24), schedule[0], mode);
+  }
+}
+
+// DES密钥调度 - 基于C#的DESHelper.KeySchedule
+function keySchedule(key, schedule, mode) {
+  const key_rnd_shift = [1, 1, 2, 2, 2, 2, 2, 2, 1, 2, 2, 2, 2, 2, 2, 1];
+  const key_perm_c = [
+    56, 48, 40, 32, 24, 16, 8, 0, 57, 49, 41, 33, 25, 17,
+    9, 1, 58, 50, 42, 34, 26, 18, 10, 2, 59, 51, 43, 35
+  ];
+  const key_perm_d = [
+    62, 54, 46, 38, 30, 22, 14, 6, 61, 53, 45, 37, 29, 21,
+    13, 5, 60, 52, 44, 36, 28, 20, 12, 4, 27, 19, 11, 3
+  ];
+  const key_compression = [
+    13, 16, 10, 23, 0, 4, 2, 27, 14, 5, 20, 9,
+    22, 18, 11, 3, 25, 7, 15, 6, 26, 19, 12, 1,
+    40, 51, 30, 36, 46, 54, 29, 39, 50, 44, 32, 47,
+    43, 48, 38, 55, 33, 52, 45, 41, 49, 35, 28, 31
+  ];
+  
+  let C = 0;
+  let D = 0;
+  
+  // 计算C和D
+  for (let i = 0, j = 31; i < 28; ++i, --j) {
+    C |= bitNum(key, key_perm_c[i], j);
+  }
+  
+  for (let i = 0, j = 31; i < 28; ++i, --j) {
+    D |= bitNum(key, key_perm_d[i], j);
+  }
+  
+  for (let i = 0; i < 16; ++i) {
+    C = ((C << key_rnd_shift[i]) | (C >>> (28 - key_rnd_shift[i]))) & 0xfffffff0;
+    D = ((D << key_rnd_shift[i]) | (D >>> (28 - key_rnd_shift[i]))) & 0xfffffff0;
+    
+    const toGen = mode === DECRYPT ? 15 - i : i;
+    
+    // 清零schedule
+    for (let j = 0; j < 6; ++j) {
+      schedule[toGen][j] = 0;
+    }
+    
+    // 填充schedule
+    for (let j = 0; j < 24; ++j) {
+      schedule[toGen][Math.floor(j / 8)] |= bitNumInIntR(C, key_compression[j], 7 - (j % 8));
+    }
+    
+    for (let j = 24; j < 48; ++j) {
+      schedule[toGen][Math.floor(j / 8)] |= bitNumInIntR(D, key_compression[j] - 27, 7 - (j % 8));
+    }
+  }
+}
+
+// 位操作函数 - 基于C#的DESHelper
+function bitNum(a, b, c) {
+  const byteIndex = Math.floor(b / 32) * 4 + 3 - Math.floor((b % 32) / 8);
+  const bitValue = (a[byteIndex] >>> (7 - (b % 8))) & 0x01;
+  return bitValue << c;
+}
+
+function bitNumInIntR(a, b, c) {
+  return ((a >>> (31 - b)) & 0x00000001) << c;
+}
+
+function bitNumInIntL(a, b, c) {
+  return (((a << b) & 0x80000000) >>> c);
+}
+
+function sboxBit(a) {
+  return ((a & 0x20) | ((a & 0x1f) >>> 1) | ((a & 0x01) << 4));
+}
+
+// S盒定义
+const sbox1 = [
+  14, 4, 13, 1, 2, 15, 11, 8, 3, 10, 6, 12, 5, 9, 0, 7,
+  0, 15, 7, 4, 14, 2, 13, 1, 10, 6, 12, 11, 9, 5, 3, 8,
+  4, 1, 14, 8, 13, 6, 2, 11, 15, 12, 9, 7, 3, 10, 5, 0,
+  15, 12, 8, 2, 4, 9, 1, 7, 5, 11, 3, 14, 10, 0, 6, 13
+];
+
+const sbox2 = [
+  15, 1, 8, 14, 6, 11, 3, 4, 9, 7, 2, 13, 12, 0, 5, 10,
+  3, 13, 4, 7, 15, 2, 8, 15, 12, 0, 1, 10, 6, 9, 11, 5,
+  0, 14, 7, 11, 10, 4, 13, 1, 5, 8, 12, 6, 9, 3, 2, 15,
+  13, 8, 10, 1, 3, 15, 4, 2, 11, 6, 7, 12, 0, 5, 14, 9
+];
+
+const sbox3 = [
+  10, 0, 9, 14, 6, 3, 15, 5, 1, 13, 12, 7, 11, 4, 2, 8,
+  13, 7, 0, 9, 3, 4, 6, 10, 2, 8, 5, 14, 12, 11, 15, 1,
+  13, 6, 4, 9, 8, 15, 3, 0, 11, 1, 2, 12, 5, 10, 14, 7,
+  1, 10, 13, 0, 6, 9, 8, 7, 4, 15, 14, 3, 11, 5, 2, 12
+];
+
+const sbox4 = [
+  7, 13, 14, 3, 0, 6, 9, 10, 1, 2, 8, 5, 11, 12, 4, 15,
+  13, 8, 11, 5, 6, 15, 0, 3, 4, 7, 2, 12, 1, 10, 14, 9,
+  10, 6, 9, 0, 12, 11, 7, 13, 15, 1, 3, 14, 5, 2, 8, 4,
+  3, 15, 0, 6, 10, 10, 13, 8, 9, 4, 5, 11, 12, 7, 2, 14
+];
+
+const sbox5 = [
+  2, 12, 4, 1, 7, 10, 11, 6, 8, 5, 3, 15, 13, 0, 14, 9,
+  14, 11, 2, 12, 4, 7, 13, 1, 5, 0, 15, 10, 3, 9, 8, 6,
+  4, 2, 1, 11, 10, 13, 7, 8, 15, 9, 12, 5, 6, 3, 0, 14,
+  11, 8, 12, 7, 1, 14, 2, 13, 6, 15, 0, 9, 10, 4, 5, 3
+];
+
+const sbox6 = [
+  12, 1, 10, 15, 9, 2, 6, 8, 0, 13, 3, 4, 14, 7, 5, 11,
+  10, 15, 4, 2, 7, 12, 9, 5, 6, 1, 13, 14, 0, 11, 3, 8,
+  9, 14, 15, 5, 2, 8, 12, 3, 7, 0, 4, 10, 1, 13, 11, 6,
+  4, 3, 2, 12, 9, 5, 15, 10, 11, 14, 1, 7, 6, 0, 8, 13
+];
+
+const sbox7 = [
+  4, 11, 2, 14, 15, 0, 8, 13, 3, 12, 9, 7, 5, 10, 6, 1,
+  13, 0, 11, 7, 4, 9, 1, 10, 14, 3, 5, 12, 2, 15, 8, 6,
+  1, 4, 11, 13, 12, 3, 7, 14, 10, 15, 6, 8, 0, 5, 9, 2,
+  6, 11, 13, 8, 1, 4, 10, 7, 9, 5, 0, 15, 14, 2, 3, 12
+];
+
+const sbox8 = [
+  13, 2, 8, 4, 6, 15, 11, 1, 10, 9, 3, 14, 5, 0, 12, 7,
+  1, 15, 13, 8, 10, 3, 7, 4, 12, 5, 6, 11, 0, 14, 9, 2,
+  7, 11, 4, 1, 9, 12, 14, 2, 0, 6, 10, 13, 15, 3, 5, 8,
+  2, 1, 14, 7, 4, 10, 8, 13, 15, 12, 9, 0, 3, 5, 6, 11
+];
+
+// IP置换
+function IP(state, input) {
+  const ipTable = [
+    57, 49, 41, 33, 25, 17, 9, 1,
+    59, 51, 43, 35, 27, 19, 11, 3,
+    61, 53, 45, 37, 29, 21, 13, 5,
+    63, 55, 47, 39, 31, 23, 15, 7,
+    56, 48, 40, 32, 24, 16, 8, 0,
+    58, 50, 42, 34, 26, 18, 10, 2,
+    60, 52, 44, 36, 28, 20, 12, 4,
+    62, 54, 46, 38, 30, 22, 14, 6
+  ];
+  
+  state[0] = 0;
+  state[1] = 0;
+  
+  for (let i = 0; i < 64; i++) {
+    const bit = (input[Math.floor(ipTable[i] / 8)] >>> (7 - (ipTable[i] % 8))) & 1;
+    if (bit) {
+      if (i < 32) {
+        state[0] |= (1 << (31 - i));
+      } else {
+        state[1] |= (1 << (63 - i));
+      }
+    }
+  }
+}
+
+// 逆IP置换
+function invIP(state, output) {
+  const invIPTable = [
+    39, 7, 47, 15, 55, 23, 63, 31,
+    38, 6, 46, 14, 54, 22, 62, 30,
+    37, 5, 45, 13, 53, 21, 61, 29,
+    36, 4, 44, 12, 52, 20, 60, 28,
+    35, 3, 43, 11, 51, 19, 59, 27,
+    34, 2, 42, 10, 50, 18, 58, 26,
+    33, 1, 41, 9, 49, 17, 57, 25,
+    32, 0, 40, 8, 48, 16, 56, 24
+  ];
+  
+  const temp = new Uint32Array(2);
+  temp[0] = state[0];
+  temp[1] = state[1];
+  
+  for (let i = 0; i < 64; i++) {
+    const byteIndex = Math.floor(i / 8);
+    const bitIndex = 7 - (i % 8);
+    let bit;
+    
+    if (invIPTable[i] < 32) {
+      bit = (temp[0] >>> (31 - invIPTable[i])) & 1;
+    } else {
+      bit = (temp[1] >>> (63 - invIPTable[i])) & 1;
+    }
+    
+    if (bit) {
+      output[byteIndex] |= (1 << bitIndex);
+    } else {
+      output[byteIndex] &= ~(1 << bitIndex);
+    }
+  }
+}
+
+// F函数
+function F(state, key) {
+  // 扩展置换
+  const e = [
+    31, 0, 1, 2, 3, 4,
+    3, 4, 5, 6, 7, 8,
+    7, 8, 9, 10, 11, 12,
+    11, 12, 13, 14, 15, 16,
+    15, 16, 17, 18, 19, 20,
+    19, 20, 21, 22, 23, 24,
+    23, 24, 25, 26, 27, 28,
+    27, 28, 29, 30, 31, 0
+  ];
+  
+  // 扩展后的数据
+  let expanded = 0n;
+  for (let i = 0; i < 48; i++) {
+    const bit = (state >>> (32 - e[i])) & 1n;
+    expanded |= bit << (47n - BigInt(i));
+  }
+  
+  // 转换为字节数组
+  const expandedBytes = new Uint8Array(6);
+  for (let i = 0; i < 6; i++) {
+    expandedBytes[i] = Number((expanded >> (40n - BigInt(i * 8))) & 0xFFn);
+  }
+  
+  // 与密钥异或
+  for (let i = 0; i < 6; i++) {
+    expandedBytes[i] ^= key[i];
+  }
+  
+  // S盒替换
+  let sboxOutput = 0n;
+  
+  for (let i = 0; i < 8; i++) {
+    const row = ((expandedBytes[Math.floor(i * 6 / 8)] << (i * 6 % 8)) & 0x20) |
+                ((expandedBytes[Math.floor((i * 6 + 5) / 8)] >>> (7 - ((i * 6 + 5) % 8))) & 0x01);
+    const col = (expandedBytes[Math.floor((i * 6 + 1) / 8)] >>> (7 - ((i * 6 + 1) % 8))) & 0x0F;
+    
+    let sboxValue;
+    switch (i) {
+      case 0: sboxValue = sbox1[row * 16 + col]; break;
+      case 1: sboxValue = sbox2[row * 16 + col]; break;
+      case 2: sboxValue = sbox3[row * 16 + col]; break;
+      case 3: sboxValue = sbox4[row * 16 + col]; break;
+      case 4: sboxValue = sbox5[row * 16 + col]; break;
+      case 5: sboxValue = sbox6[row * 16 + col]; break;
+      case 6: sboxValue = sbox7[row * 16 + col]; break;
+      case 7: sboxValue = sbox8[row * 16 + col]; break;
+    }
+    
+    sboxOutput |= BigInt(sboxValue) << (28n - BigInt(i * 4));
+  }
+  
+  // P置换
+  const p = [
+    15, 6, 19, 20, 28, 11, 27, 16,
+    0, 14, 22, 25, 4, 17, 30, 9,
+    1, 7, 23, 13, 31, 26, 2, 8,
+    18, 12, 29, 5, 21, 10, 3, 24
+  ];
+  
+  let result = 0n;
+  for (let i = 0; i < 32; i++) {
+    const bit = (sboxOutput >>> (31n - BigInt(p[i]))) & 1n;
+    result |= bit << (31n - BigInt(i));
+  }
+  
+  return Number(result);
+}
+
+// DES加密/解密
+function crypt(input, output, key) {
+  const state = new Uint32Array(2);
+  
+  // 初始置换
+  IP(state, input);
+  
+  // 16轮Feistel网络
+  for (let idx = 0; idx < 16; ++idx) {
+    const t = state[1];
+    state[1] = F(state[1], key[idx]) ^ state[0];
+    state[0] = t;
+  }
+  
+  // 最后交换
+  const temp = state[0];
+  state[0] = F(state[1], key[15]) ^ state[0];
+  state[1] = temp;
+  
+  // 逆初始置换
+  invIP(state, output);
+}
+
+// 3DES加密/解密
+function tripleDESCrypt(input, output, key) {
+  const temp1 = new Uint8Array(8);
+  const temp2 = new Uint8Array(8);
+  
+  crypt(input, temp1, key[0]);
+  crypt(temp1, temp2, key[1]);
+  crypt(temp2, output, key[2]);
 }
 
 // 16进制字符串转字节数组
 function hexStringToByteArray(hexString) {
-  // 确保长度是偶数
-  if (hexString.length % 2 !== 0) {
-    console.warn('16进制字符串长度不是偶数，进行修正');
-    hexString = hexString.length % 2 === 1 ? '0' + hexString : hexString.substring(0, hexString.length - 1);
-  }
-  
   const bytes = new Uint8Array(hexString.length / 2);
   for (let i = 0; i < hexString.length; i += 2) {
     bytes[i / 2] = parseInt(hexString.substr(i, 2), 16);
@@ -1084,59 +1388,22 @@ function hexStringToByteArray(hexString) {
   return bytes;
 }
 
-// 3DES解密
-function tripleDesDecrypt(encryptedBytes, key) {
-  const crypto = require('crypto');
-  
-  // 将密钥转换为Buffer
-  const keyBuffer = Buffer.from(key, 'ascii');
-  
-  try {
-    // 创建3DES-ECB解密器
-    const decipher = crypto.createDecipheriv('des-ede3', keyBuffer, Buffer.alloc(0));
-    
-    // 设置自动填充
-    decipher.setAutoPadding(true);
-    
-    // 解密
-    const decrypted = Buffer.concat([
-      decipher.update(Buffer.from(encryptedBytes)),
-      decipher.final()
-    ]);
-    
-    return new Uint8Array(decrypted);
-  } catch (error) {
-    console.error('3DES解密失败:', error.message);
-    throw error;
-  }
-}
-
-// zlib解压缩
-function zlibInflate(compressedBytes) {
+// zlib解压缩 - 基于C#的SharpZipLibDecompress
+function sharpZipLibDecompress(data) {
   const zlib = require('zlib');
   
-  // 如果数据太短，可能不是压缩数据
-  if (compressedBytes.length < 10) {
-    console.log('数据太短，可能不是压缩数据，直接返回');
-    return compressedBytes;
-  }
-  
   try {
-    // 先尝试inflateRaw（无zlib头）
-    console.log('尝试inflateRaw解压缩');
-    const decompressed = zlib.inflateRawSync(Buffer.from(compressedBytes));
+    // 使用inflate解压缩
+    const decompressed = zlib.inflateSync(Buffer.from(data));
     return new Uint8Array(decompressed);
-  } catch (error1) {
-    console.warn('inflateRaw失败，尝试inflate:', error1.message);
-    
+  } catch (error) {
+    // 如果失败，尝试inflateRaw
     try {
-      // 尝试使用inflate（带zlib头）
-      console.log('尝试inflate解压缩');
-      const decompressed = zlib.inflateSync(Buffer.from(compressedBytes));
+      const decompressed = zlib.inflateRawSync(Buffer.from(data));
       return new Uint8Array(decompressed);
     } catch (error2) {
-      console.warn('inflate也失败，返回原始数据:', error2.message);
-      return compressedBytes;
+      console.error('解压缩失败:', error2.message);
+      return data;
     }
   }
 }
