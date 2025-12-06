@@ -163,7 +163,7 @@ async function handleMappedSong(mappedMid, originalTrackName, originalArtistName
 // 通过映射表的歌名艺人搜索歌曲信息
 async function searchSongByMapping(trackName, artistName) {
   // 使用原始歌名和艺人名搜索
-  const searchUrl = `https://api.vkeys.cn/v2/music/tencent/search/song?word=${encodeURIComponent(trackName + ' ' + artistName)}&num=3`;
+  const searchUrl = `https://api.vkeys.cn/v2/music/tencent/search/song?word=${encodeURIComponent(trackName + ' ' + artistName)}&num=5`;
   
   const response = await axios.get(searchUrl);
   const data = response.data;
