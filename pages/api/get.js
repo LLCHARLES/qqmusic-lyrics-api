@@ -52,16 +52,16 @@ export default async function handler(req, res) {
   try {
     console.log('搜索请求:', { trackName: finalTrackName, artistName: finalArtistName });
     
-    // 预处理
-    const processedTrackName = preprocessTrackName(finalTrackName);
-    const processedArtists = preprocessArtists(finalArtistName);
-    
     // 检查是否需要直接映射到特定MID
-    const mappedMid = checkSongMapping(processedTrackName, processedArtists, finalTrackName, finalArtistName);
+    const mappedMid = checkSongMapping(finalTrackName, finalArtistName);
     if (mappedMid) {
       console.log(`检测到映射歌曲，直接使用MID: ${mappedMid}`);
       return await handleMappedSong(mappedMid, finalTrackName, finalArtistName, res);
     }
+    
+    // 预处理
+    const processedTrackName = preprocessTrackName(finalTrackName);
+    const processedArtists = preprocessArtists(finalArtistName);
     
     console.log('正常搜索:', processedTrackName);
     
@@ -103,41 +103,34 @@ export default async function handler(req, res) {
 }
 
 // 检查歌曲映射
-function checkSongMapping(processedTrackName, processedArtists, originalTrackName, originalArtistName) {
-  // 尝试多种键格式进行匹配
-  const possibleKeys = [
-    `${processedTrackName}_${processedArtists[0]}`,
-    `${originalTrackName}_${originalArtistName}`,
-    `${processedTrackName}_${originalArtistName}`,
-    `${originalTrackName}_${processedArtists[0]}`,
-    // 对于英文歌名，也尝试小写匹配
-    `${processedTrackName.toLowerCase()}_${processedArtists[0]}`,
-    `${originalTrackName.toLowerCase()}_${originalArtistName}`,
-    `${processedTrackName.toLowerCase()}_${originalArtistName}`,
-    `${originalTrackName.toLowerCase()}_${processedArtists[0]}`
-  ];
-  
-  for (const key of possibleKeys) {
-    if (songMapping[key]) {
-      return songMapping[key];
-    }
+function checkSongMapping(originalTrackName, originalArtistName) {
+  const key = `${originalTrackName}_${originalArtistName}`;
+  if (songMapping[key]) {
+    return songMapping[key];
   }
-  
   return null;
 }
 
 // 处理映射歌曲
 async function handleMappedSong(mappedMid, originalTrackName, originalArtistName, res) {
   try {
-    // 对于映射歌曲，使用MID获取歌词
+    // 首先，通过MID获取歌词
     const lyrics = await getLyricsByMid(mappedMid);
     
-    // 尝试获取歌曲信息
+    // 然后，尝试通过搜索API获取歌曲信息
     let songInfo = null;
     try {
-      songInfo = await getSongInfoByMid(mappedMid);
+      songInfo = await searchSongByMapping(originalTrackName, originalArtistName);
+      
+      // 如果搜索到的歌曲MID与映射MID不一致，使用映射MID
+      if (songInfo && songInfo.mid !== mappedMid) {
+        console.log('搜索到的MID与映射MID不一致，使用映射MID:', { 搜索MID: songInfo.mid, 映射MID: mappedMid });
+        // 我们仍然使用映射MID，但保留搜索结果中的歌曲信息
+        songInfo.mid = mappedMid;
+        songInfo.id = mappedMid;
+      }
     } catch (error) {
-      console.log('无法获取歌曲信息，使用默认信息');
+      console.log('无法通过搜索API获取歌曲信息，使用默认信息');
     }
     
     const response = {
@@ -167,6 +160,21 @@ async function handleMappedSong(mappedMid, originalTrackName, originalArtistName
   }
 }
 
+// 通过映射表的歌名艺人搜索歌曲信息
+async function searchSongByMapping(trackName, artistName) {
+  // 使用原始歌名和艺人名搜索
+  const searchUrl = `https://api.vkeys.cn/v2/music/tencent/search/song?word=${encodeURIComponent(trackName + ' ' + artistName)}&num=3`;
+  
+  const response = await axios.get(searchUrl);
+  const data = response.data;
+  
+  if (data?.code === 200 && data.data?.length > 0) {
+    return data.data[0]; // 返回第一个结果
+  }
+  
+  throw new Error('无法通过搜索API获取歌曲信息');
+}
+
 // 通过MID获取歌词
 async function getLyricsByMid(mid) {
   try {
@@ -179,25 +187,6 @@ async function getLyricsByMid(mid) {
   } catch (error) {
     console.error('通过MID获取歌词失败:', error);
     return getEmptyLyrics();
-  }
-}
-
-// 通过MID获取歌曲信息
-async function getSongInfoByMid(mid) {
-  try {
-    const response = await axios.get(`https://c.y.qq.com/v8/fcg-bin/fcg_play_single_song.fcg?songmid=${mid}&format=json`, {
-      headers: {
-        'Referer': 'https://c.y.qq.com/'
-      }
-    });
-    
-    if (response.data.data && response.data.data.length > 0) {
-      return response.data.data[0];
-    }
-    
-    throw new Error('无法获取歌曲信息');
-  } catch (error) {
-    throw error;
   }
 }
 
@@ -580,9 +569,9 @@ function processLyricsData(data) {
       translatedLyrics = filterLyrics(data.data.trans, 'lrc');
     }
     
-    // 处理YRC歌词，传入已过滤的LRC歌词用于时间轴参考
+    // 处理YRC歌词，使用与LRC相同的过滤规则
     if (data.data.yrc) {
-      yrcLyrics = filterLyrics(data.data.yrc, 'yrc', syncedLyrics);
+      yrcLyrics = filterLyrics(data.data.yrc, 'yrc');
     }
   }
   
@@ -604,7 +593,8 @@ function filterLyrics(lyricContent, type = 'lrc', referenceLyrics = '') {
   if (type === 'lrc') {
     return filterLrcLyrics(parsedLines);
   } else if (type === 'yrc') {
-    return filterYrcLyrics(parsedLines, referenceLyrics);
+    // YRC使用与LRC相同的过滤规则
+    return filterYrcLyrics(parsedLines);
   }
   
   return '';
@@ -811,130 +801,130 @@ function filterLrcLyrics(parsedLines) {
   return result;
 }
 
-// YRC歌词过滤
-function filterYrcLyrics(parsedLines, syncedLyrics) {
-  // 如果LRC歌词为空，则使用备用过滤方案
-  if (!syncedLyrics || syncedLyrics.trim() === '') {
-    return filterYrcLyricsFallback(parsedLines);
-  }
+// YRC歌词过滤 - 使用与LRC相同的过滤规则
+function filterYrcLyrics(parsedLines) {
+  // 使用与LRC相同的过滤逻辑
+  let filtered = [...parsedLines];
   
-  // 1) 从LRC歌词中提取第一行有效歌词的时间戳
-  const firstLrcTime = extractFirstLrcTimestamp(syncedLyrics);
+  // 收集"被删除的冒号行"的纯文本
+  let removedColonPlainTexts = [];
   
-  if (!firstLrcTime) {
-    // 如果无法提取LRC时间戳，使用备用方案
-    return filterYrcLyricsFallback(parsedLines);
-  }
-  
-  console.log(`LRC第一行歌词时间: ${firstLrcTime}ms`);
-  
-  // 2) 找到有效起始位置
-  let foundStart = false;
-  const filteredLines = [];
-  
-  for (const line of parsedLines) {
-    // 检查是否达到或超过LRC第一行的时间
-    // 添加一些容差，因为YRC可能比LRC稍早开始
-    if (!foundStart && line.startTime >= firstLrcTime - 2000) {
-      foundStart = true;
-      console.log(`找到YRC有效起始行: ${line.startTime}ms, 内容: ${line.plainText.substring(0, 20)}...`);
-    }
-    
-    if (foundStart) {
-      filteredLines.push(line);
+  // 1) 前三行内：含冒号的行直接删除
+  let removedA2Colon = false;
+  let i = 0;
+  let scanLimit = Math.min(3, filtered.length);
+  while (i < scanLimit) {
+    const text = filtered[i].plainText;
+    if (containsColon(text)) {
+      removedColonPlainTexts.push(text);
+      filtered.splice(i, 1);
+      removedA2Colon = true;
+      scanLimit = Math.min(3, filtered.length);
+      continue;
+    } else {
+      i += 1;
     }
   }
   
-  // 3) 如果没找到基于时间的起始点，使用备用方案
-  if (filteredLines.length === 0) {
-    console.log('基于时间的过滤失败，使用备用方案');
-    return filterYrcLyricsFallback(parsedLines);
+  // 2) 处理"开头连续冒号行"
+  let leading = 0;
+  while (leading < filtered.length) {
+    const text = filtered[leading].plainText;
+    if (containsColon(text)) {
+      leading += 1;
+    } else {
+      break;
+    }
   }
   
-  // 4) 对保留的行进行额外清理（移除可能的残留制作信息）
-  const cleanedLines = filteredLines.filter(line => {
-    const plainText = line.plainText;
+  if (removedA2Colon) {
+    if (leading >= 1) {
+      for (let idx = 0; idx < leading; idx++) {
+        removedColonPlainTexts.push(filtered[idx].plainText);
+      }
+      filtered.splice(0, leading);
+    }
+  } else {
+    if (leading >= 2) {
+      for (let idx = 0; idx < leading; idx++) {
+        removedColonPlainTexts.push(filtered[idx].plainText);
+      }
+      filtered.splice(0, leading);
+    }
+  }
+  
+  // 3) 制作行（全局）：删除任意位置出现的"连续 ≥2 行均含冒号"的区间
+  let newFiltered = [];
+  i = 0;
+  while (i < filtered.length) {
+    const text = filtered[i].plainText;
+    if (containsColon(text)) {
+      // 统计这一段连续"含冒号"的长度
+      let j = i;
+      while (j < filtered.length) {
+        const tj = filtered[j].plainText;
+        if (containsColon(tj)) {
+          j += 1;
+        } else {
+          break;
+        }
+      }
+      const runLen = j - i;
+      if (runLen >= 2) {
+        // 收集整段 i..<(i+runLen) 的纯文本后丢弃
+        for (let k = i; k < j; k++) {
+          removedColonPlainTexts.push(filtered[k].plainText);
+        }
+        i = j;
+      } else {
+        // 仅 1 行，保留
+        newFiltered.push(filtered[i]);
+        i = j;
+      }
+    } else {
+      newFiltered.push(filtered[i]);
+      i += 1;
+    }
+  }
+  filtered = newFiltered;
+  
+  // 4) 全局删除：凡包含【】或 [] 的行一律删除
+  filtered = filtered.filter(line => !containsBracketTag(line.plainText));
+  
+  // 5) 处理开头两行的"圆括号标签"
+  i = 0;
+  scanLimit = Math.min(2, filtered.length);
+  while (i < scanLimit) {
+    const text = filtered[i].plainText;
+    if (containsParenPair(text)) {
+      filtered.splice(i, 1);
+      scanLimit = Math.min(2, filtered.length);
+      continue;
+    } else {
+      i += 1;
+    }
+  }
+  
+  // 6) 全局删除：版权/授权/禁止类提示语
+  filtered = filtered.filter(line => !isLicenseWarningLine(line.plainText));
+  
+  // 7) 额外的清理步骤：移除空行
+  filtered = filtered.filter(line => {
+    const text = line.plainText;
     
     // 移除空行
-    if (plainText.trim() === '') return false;
+    if (text === '') return false;
     
-    // 移除明显的制作人员行（即使它们在有效时间后）
-    if (isProductionLine(plainText, line.startTime)) {
-      return false;
-    }
-    
-    // 移除版权警告行
-    if (isLicenseWarningLine(plainText)) {
-      return false;
-    }
-    
-    // 移除包含标签的行
-    if (containsBracketTag(plainText)) {
-      return false;
-    }
+    // 移除只包含"//"的行
+    if (text === '//') return false;
     
     return true;
   });
   
   // 重新组合成YRC格式
-  const result = cleanedLines.map(line => line.raw).join('\n');
+  const result = filtered.map(line => line.raw).join('\n');
   
-  console.log(`YRC过滤结果: 从${parsedLines.length}行减少到${cleanedLines.length}行`);
   return result;
-}
-
-// YRC备用过滤方案
-function filterYrcLyricsFallback(parsedLines) {
-  let foundLyricsStart = false;
-  const filteredLines = [];
-  
-  for (const line of parsedLines) {
-    const plainText = line.plainText;
-    
-    // 跳过空行
-    if (plainText.trim() === '') continue;
-    
-    // 跳过制作人员信息（通常在歌曲前30秒）
-    if (line.startTime < 30000 && isProductionLine(plainText, line.startTime)) {
-      continue;
-    }
-    
-    // 一旦找到非制作人员的歌词内容，标记开始
-    if (!foundLyricsStart && !isProductionLine(plainText, line.startTime)) {
-      foundLyricsStart = true;
-    }
-    
-    // 只有找到歌词开始后才添加行，或者如果是制作信息但时间靠后也添加
-    if (foundLyricsStart || line.startTime >= 30000) {
-      // 额外检查版权和标签
-      if (!isLicenseWarningLine(plainText) && !containsBracketTag(plainText)) {
-        filteredLines.push(line);
-      }
-    }
-  }
-  
-  return filteredLines.map(line => line.raw).join('\n');
-}
-
-// 从LRC歌词中提取第一行有效歌词的时间戳（转换为毫秒）
-function extractFirstLrcTimestamp(lrcContent) {
-  if (!lrcContent) return null;
-  
-  const lines = lrcContent.split('\n');
-  
-  for (const line of lines) {
-    const match = line.match(/^\[(\d+):(\d+)\.(\d+)\]/);
-    if (match) {
-      const minutes = parseInt(match[1]);
-      const seconds = parseInt(match[2]);
-      const hundredths = parseInt(match[3]);
-      
-      // 转换为毫秒
-      return (minutes * 60 + seconds) * 1000 + hundredths * 10;
-    }
-  }
-  
-  return null;
 }
 
 // 从YRC内容中提取纯文本（移除时间标记）
@@ -1001,30 +991,6 @@ function isLicenseWarningLine(text) {
     if (text.includes(token)) count += 1;
   }
   return count >= 3; // 降低阈值到3
-}
-
-// 判断是否为制作人员行
-function isProductionLine(plainText, startTime) {
-  // 制作人员关键词
-  const productionKeywords = [
-    '词', '曲', '编曲', '制作人', '合声', '合声编写', '吉他', '贝斯', '鼓',
-    '录音助理', '录音工程', '混音工程', '录音', '混音', '工程', '助理', '编写',
-    'lyrics', 'lyric', 'composed', 'compose', 'producer', 'produce', 'produced'
-  ];
-  
-  // 检查是否包含制作关键词
-  for (const keyword of productionKeywords) {
-    if (plainText.includes(keyword)) {
-      return true;
-    }
-  }
-  
-  // 检查是否包含冒号（制作人员信息常见格式）
-  if (containsColon(plainText)) {
-    return true;
-  }
-  
-  return false;
 }
 
 // 获取空的歌词对象
