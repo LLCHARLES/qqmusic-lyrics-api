@@ -851,10 +851,24 @@ function filterYrcLyrics(parsedLines) {
   // 收集"被删除的冒号行"的纯文本
   let removedColonPlainTexts = [];
   
-  // 1) 前三行内：含冒号的行直接删除
-  let removedA2Colon = false;
+  // 1) 前三行内：含 '-' 的行直接删除（标题行）- 添加缺失的步骤
   let i = 0;
   let scanLimit = Math.min(3, filtered.length);
+  while (i < scanLimit) {
+    const text = filtered[i].plainText;
+    if (text.includes('-')) {
+      filtered.splice(i, 1);
+      scanLimit = Math.min(3, filtered.length);
+      continue;
+    } else {
+      i += 1;
+    }
+  }
+  
+  // 2) 前三行内：含冒号的行直接删除
+  let removedA2Colon = false;
+  i = 0;
+  scanLimit = Math.min(3, filtered.length);
   while (i < scanLimit) {
     const text = filtered[i].plainText;
     if (containsColon(text)) {
@@ -868,7 +882,7 @@ function filterYrcLyrics(parsedLines) {
     }
   }
   
-  // 2) 处理"开头连续冒号行"
+  // 3) 处理"开头连续冒号行"
   let leading = 0;
   while (leading < filtered.length) {
     const text = filtered[leading].plainText;
@@ -895,7 +909,7 @@ function filterYrcLyrics(parsedLines) {
     }
   }
   
-  // 3) 制作行（全局）：删除任意位置出现的"连续 ≥2 行均含冒号"的区间
+  // 4) 制作行（全局）：删除任意位置出现的"连续 ≥2 行均含冒号"的区间
   let newFiltered = [];
   i = 0;
   while (i < filtered.length) {
@@ -930,10 +944,10 @@ function filterYrcLyrics(parsedLines) {
   }
   filtered = newFiltered;
   
-  // 4) 全局删除：凡包含【】或 [] 的行一律删除
+  // 5) 全局删除：凡包含【】或 [] 的行一律删除
   filtered = filtered.filter(line => !containsBracketTag(line.plainText));
   
-  // 5) 处理开头两行的"圆括号标签"
+  // 6) 处理开头两行的"圆括号标签"
   i = 0;
   scanLimit = Math.min(2, filtered.length);
   while (i < scanLimit) {
@@ -947,10 +961,10 @@ function filterYrcLyrics(parsedLines) {
     }
   }
   
-  // 6) 全局删除：版权/授权/禁止类提示语
+  // 7) 全局删除：版权/授权/禁止类提示语
   filtered = filtered.filter(line => !isLicenseWarningLine(line.plainText));
   
-  // 7) 额外的清理步骤：移除空行
+  // 8) 额外的清理步骤：移除空行
   filtered = filtered.filter(line => {
     const text = line.plainText;
     
