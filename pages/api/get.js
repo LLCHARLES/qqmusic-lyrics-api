@@ -230,7 +230,7 @@ function preprocessTrackName(trackName) {
   return processed || trackName.split(/[-\s–—]/)[0].trim();
 }
 
-// 搜索歌曲
+// 搜索歌曲 - 修改为尝试多种搜索策略
 async function searchSong(trackName, artists, originalTrackName, originalArtistName) {
   // 判断是否需要简化搜索
   const shouldSimplify = trackName.length > 30 || 
@@ -241,56 +241,97 @@ async function searchSong(trackName, artists, originalTrackName, originalArtistN
     return await simplifiedSearch(trackName, artists, originalTrackName, originalArtistName);
   }
   
-  // 正常搜索 - 去掉num限制
+  // 正常搜索 - 尝试多种组合
   for (const artist of artists) {
-    const searchUrl = `https://api.vkeys.cn/v2/music/tencent/search/song?word=${encodeURIComponent(trackName + ' ' + artist)}`;
+    // 尝试多种搜索组合
+    const searchCombinations = [
+      `${trackName} ${artist}`,  // 有空格
+      `${trackName}${artist}`,   // 无空格
+      trackName,                 // 仅歌名
+    ];
     
-    try {
-      const response = await axios.get(searchUrl);
-      const data = response.data;
+    for (const keyword of searchCombinations) {
+      const searchUrl = `https://api.vkeys.cn/v2/music/tencent/search/song?word=${encodeURIComponent(keyword)}`;
+      console.log(`尝试搜索: ${keyword}`);
       
-      if (data?.code === 200 && data.data?.length > 0) {
-        const match = findBestMatch(data.data, trackName, artists, originalTrackName, originalArtistName);
-        if (match) return match;
+      try {
+        const response = await axios.get(searchUrl);
+        const data = response.data;
+        
+        if (data?.code === 200 && data.data?.length > 0) {
+          console.log(`搜索组合 "${keyword}" 返回 ${data.data.length} 个结果`);
+          const match = findBestMatch(data.data, trackName, artists, originalTrackName, originalArtistName);
+          if (match) {
+            console.log(`找到匹配: ${getSongName(match)} - ${extractArtists(match)}`);
+            return match;
+          }
+        } else {
+          console.log(`搜索组合 "${keyword}" 无结果`);
+        }
+      } catch (error) {
+        console.error('搜索失败:', error.message);
       }
-    } catch (error) {
-      console.error('搜索失败:', error);
+      
+      // 短暂延迟，避免请求过快
+      await new Promise(resolve => setTimeout(resolve, 100));
     }
   }
   
   return null;
 }
 
-// 简化搜索
+// 简化搜索 - 同样修改为尝试多种组合
 async function simplifiedSearch(trackName, artists, originalTrackName, originalArtistName) {
+  console.log('开始简化搜索');
   const strategies = [
     // 策略1: 核心歌名 + 艺术家
     () => {
       const coreName = extractCoreName(trackName);
-      return artists.map(artist => `${coreName} ${artist}`);
+      console.log('策略1 - 核心歌名:', coreName);
+      return artists.flatMap(artist => [
+        `${coreName} ${artist}`,  // 有空格
+        `${coreName}${artist}`,   // 无空格
+        coreName,                 // 仅歌名
+      ]);
     },
     // 策略2: 预处理歌名 + 艺术家
     () => {
       const processed = preprocessTrackName(trackName);
-      return artists.map(artist => `${processed} ${artist}`);
+      console.log('策略2 - 预处理歌名:', processed);
+      return artists.flatMap(artist => [
+        `${processed} ${artist}`,  // 有空格
+        `${processed}${artist}`,   // 无空格
+        processed,                 // 仅歌名
+      ]);
     },
   ];
   
   for (let i = 0; i < strategies.length; i++) {
+    console.log(`尝试策略 ${i+1}`);
     try {
       const keywords = strategies[i]();
+      console.log(`策略 ${i+1} 关键词:`, keywords);
       
       for (const keyword of keywords) {
-        // 去掉num限制
+        console.log(`搜索关键词: ${keyword}`);
         const searchUrl = `https://api.vkeys.cn/v2/music/tencent/search/song?word=${encodeURIComponent(keyword)}`;
         
         const response = await axios.get(searchUrl);
         const data = response.data;
         
+        console.log(`策略 ${i+1} 搜索结果:`, { 
+          状态码: data?.code,
+          结果数量: data.data?.length 
+        });
+        
         if (data?.code === 200 && data.data?.length > 0) {
+          console.log(`策略 ${i+1} 找到 ${data.data.length} 个结果`);
           const match = findBestMatch(data.data, trackName, artists, originalTrackName, originalArtistName);
           if (match) {
+            console.log(`策略 ${i+1} 找到匹配:`, { 歌名: getSongName(match), 艺人: extractArtists(match) });
             return match;
+          } else {
+            console.log(`策略 ${i+1} 未找到匹配项`);
           }
         }
       }
@@ -301,6 +342,7 @@ async function simplifiedSearch(trackName, artists, originalTrackName, originalA
     }
   }
   
+  console.log('所有简化搜索策略均失败');
   return null;
 }
 
