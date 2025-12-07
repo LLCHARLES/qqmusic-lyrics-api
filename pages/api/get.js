@@ -163,7 +163,7 @@ async function handleMappedSong(mappedMid, originalTrackName, originalArtistName
 // 通过映射表的歌名艺人搜索歌曲信息
 async function searchSongByMapping(trackName, artistName) {
   // 使用原始歌名和艺人名搜索
-  const searchUrl = `https://api.vkeys.cn/v2/music/tencent/search/song?word=${encodeURIComponent(trackName + ' ' + artistName)}&num=5`;
+  const searchUrl = `https://api.vkeys.cn/v2/music/tencent/search/song?word=${encodeURIComponent(trackName + ' ' + artistName)}&num=3`;
   
   const response = await axios.get(searchUrl);
   const data = response.data;
@@ -243,7 +243,7 @@ async function searchSong(trackName, artists, originalTrackName, originalArtistN
   
   // 正常搜索 - 限制返回3个结果
   for (const artist of artists) {
-    const searchUrl = `https://api.vkeys.cn/v2/music/tencent/search/song?word=${encodeURIComponent(trackName + ' ' + artist)}&num=5`;
+    const searchUrl = `https://api.vkeys.cn/v2/music/tencent/search/song?word=${encodeURIComponent(trackName + ' ' + artist)}&num=3`;
     
     try {
       const response = await axios.get(searchUrl);
@@ -282,7 +282,7 @@ async function simplifiedSearch(trackName, artists, originalTrackName, originalA
       
       for (const keyword of keywords) {
         // 限制返回3个结果
-        const searchUrl = `https://api.vkeys.cn/v2/music/tencent/search/song?word=${encodeURIComponent(keyword)}&num=5`;
+        const searchUrl = `https://api.vkeys.cn/v2/music/tencent/search/song?word=${encodeURIComponent(keyword)}&num=3`;
         
         const response = await axios.get(searchUrl);
         const data = response.data;
