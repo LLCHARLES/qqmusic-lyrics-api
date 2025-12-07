@@ -243,7 +243,7 @@ async function searchSong(trackName, artists, originalTrackName, originalArtistN
   
   // 正常搜索 - 限制返回3个结果
   for (const artist of artists) {
-    const searchUrl = `https://api.vkeys.cn/v2/music/tencent/search/song?word=${encodeURIComponent(trackName + ' ' + artist)}&num=3`;
+    const searchUrl = `https://api.vkeys.cn/v2/music/tencent/search/song?word=${encodeURIComponent(trackName + ' ' + artist)}&num=5`;
     
     try {
       const response = await axios.get(searchUrl);
@@ -282,7 +282,7 @@ async function simplifiedSearch(trackName, artists, originalTrackName, originalA
       
       for (const keyword of keywords) {
         // 限制返回3个结果
-        const searchUrl = `https://api.vkeys.cn/v2/music/tencent/search/song?word=${encodeURIComponent(keyword)}&num=3`;
+        const searchUrl = `https://api.vkeys.cn/v2/music/tencent/search/song?word=${encodeURIComponent(keyword)}&num=5`;
         
         const response = await axios.get(searchUrl);
         const data = response.data;
