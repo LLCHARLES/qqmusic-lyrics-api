@@ -9,6 +9,7 @@ const songMapping = {
   '一樣的月光_徐佳瑩': '001KyJTt1kbkfP',
   '拉过勾的_陸虎': '004QCuMF2nVaxn',
   '人生馬拉松_陳奕迅': '004J2NXe3bwkjk',
+  'M O N I C A_張國榮': '003AsbHv32Cr6F',
   
   // 李志
   '天空之城_李志': '002QU4XI2cKwua',
