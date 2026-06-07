@@ -18,6 +18,6 @@
       "src": "/api/musixmatch",
       "methods": ["GET", "OPTIONS"],
       "dest": "/api/musixmatch.js"
-    },
+    }
   ]
 }
