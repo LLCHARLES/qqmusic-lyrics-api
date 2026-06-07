@@ -19,9 +19,5 @@
       "methods": ["GET", "OPTIONS"],
       "dest": "/api/musixmatch.js"
     },
-    {
-      "src": "/(.*)",
-      "dest": "/api/get.js"
-    }
   ]
 }
