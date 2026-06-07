@@ -3,17 +3,25 @@
   "functions": {
     "pages/api/get.js": {
       "includeFiles": "**/*"
+    },
+    "pages/api/musixmatch.js": {
+      "includeFiles": "**/*"
     }
   },
   "routes": [
     {
-      "src": "pages/api/get",
+      "src": "/api/get",
       "methods": ["GET", "OPTIONS"],
-      "dest": "pages/api/get.js"
+      "dest": "/api/get.js"
+    },
+    {
+      "src": "/api/musixmatch",
+      "methods": ["GET", "OPTIONS"],
+      "dest": "/api/musixmatch.js"
     },
     {
       "src": "/(.*)",
-      "dest": "pages/api/get.js"
+      "dest": "/api/get.js"
     }
   ]
 }
