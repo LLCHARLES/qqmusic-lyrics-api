@@ -28,30 +28,17 @@ export default async function handler(req, res) {
   // Musixmatch API 地址
   const MUSIXMATCH_API = 'https://apic.musixmatch.com';
   
-  // 从环境变量读取 token（重要：不要在代码中硬编码）
-  const MUSIXMATCH_TOKEN = process.env.MUSIXMATCH_TOKEN;
-  const MUSIXMATCH_APP_ID = process.env.MUSIXMATCH_APP_ID;
-  
   // 构建请求 URL
   const url = `${MUSIXMATCH_API}${target_path}`;
   
-  // 构建查询参数
+  // 构建查询参数 - 直接把 iOS 传来的所有参数转发
   const queryParams = new URLSearchParams();
   
-  // 添加客户端传来的参数
   Object.keys(params).forEach(key => {
     if (params[key]) {
       queryParams.append(key, params[key]);
     }
   });
-  
-  // 添加服务器端的认证信息（覆盖客户端可能传来的，保证安全）
-  if (MUSIXMATCH_TOKEN) {
-    queryParams.set('usertoken', MUSIXMATCH_TOKEN);
-  }
-  if (MUSIXMATCH_APP_ID) {
-    queryParams.set('app_id', MUSIXMATCH_APP_ID);
-  }
   
   // 强制 JSON 格式
   queryParams.set('format', 'json');
@@ -59,7 +46,6 @@ export default async function handler(req, res) {
   const fullUrl = `${url}?${queryParams.toString()}`;
   
   console.log('[Musixmatch Proxy] Requesting:', target_path);
-  console.log('[Musixmatch Proxy] Params:', Object.keys(params));
   
   try {
     // 发起请求到 Musixmatch（Vercel 海外节点自动绕过防火墙）
