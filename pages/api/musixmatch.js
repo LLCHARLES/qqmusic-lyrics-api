@@ -1,72 +1,52 @@
 // pages/api/musixmatch.js
 
 export default async function handler(req, res) {
-  // CORS 设置
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   
   if (req.method === 'OPTIONS') {
-    res.status(200).end();
-    return;
+    return res.status(200).end();
   }
   
-  if (req.method !== 'GET') {
-    return res.status(405).json({ error: 'Method not allowed' });
-  }
-  
-  // 获取客户端传来的参数
   const { target_path, ...params } = req.query;
   
+  // 🔍 打印所有收到的参数
+  console.log('[Musixmatch Proxy] Received params:', JSON.stringify(params, null, 2));
+  console.log('[Musixmatch Proxy] target_path:', target_path);
+  
   if (!target_path) {
-    return res.status(400).json({ 
-      error: 'Missing parameter', 
-      message: 'target_path is required' 
-    });
+    return res.status(400).json({ error: 'Missing target_path' });
   }
   
-  // Musixmatch API 地址
-  const MUSIXMATCH_API = 'https://apic.musixmatch.com';
-  
-  // 构建请求 URL
-  const url = `${MUSIXMATCH_API}${target_path}`;
-  
-  // 构建查询参数 - 直接把 iOS 传来的所有参数转发
-  const queryParams = new URLSearchParams();
-  
-  Object.keys(params).forEach(key => {
-    if (params[key]) {
-      queryParams.append(key, params[key]);
-    }
-  });
-  
-  // 强制 JSON 格式
-  queryParams.set('format', 'json');
-  
-  const fullUrl = `${url}?${queryParams.toString()}`;
-  
-  console.log('[Musixmatch Proxy] Requesting:', target_path);
-  
   try {
-    // 发起请求到 Musixmatch（Vercel 海外节点自动绕过防火墙）
-    const response = await fetch(fullUrl, {
-      method: 'GET',
+    const musixmatchUrl = new URL(`https://apic.musixmatch.com${target_path}`);
+    
+    Object.keys(params).forEach(key => {
+      musixmatchUrl.searchParams.append(key, params[key]);
+    });
+    musixmatchUrl.searchParams.append('format', 'json');
+    
+    // 🔍 打印最终请求的 URL（注意：不要在生产环境打印 token）
+    console.log('[Musixmatch Proxy] Full URL:', musixmatchUrl.toString());
+    
+    const response = await fetch(musixmatchUrl.toString(), {
       headers: {
-        'User-Agent': 'Vercel-Musixmatch-Proxy/1.0',
-        'Accept': 'application/json'
+        'Accept': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
       }
     });
     
-    // 获取响应数据
-    const data = await response.json();
+    // 🔍 打印响应状态
+    console.log('[Musixmatch Proxy] Response status:', response.status);
     
-    // 返回给客户端
-    res.status(response.status).json(data);
+    const data = await response.json();
+    return res.status(200).json(data);
     
   } catch (error) {
     console.error('[Musixmatch Proxy] Error:', error.message);
-    res.status(500).json({ 
-      error: 'Proxy request failed', 
+    return res.status(500).json({ 
+      error: 'Proxy failed', 
       message: error.message 
     });
   }
